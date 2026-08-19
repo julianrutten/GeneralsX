@@ -17,7 +17,8 @@ build/linux64-deploy/lanprobe enumerate
 
 | Mode | What it does |
 |---|---|
-| `enumerate` | Prints the wire sizes and the real `IPEnumeration` candidate list in list order, then shows which subnet broadcast address the shipping send path would pick for each candidate. |
+| `enumerate` | Prints the wire sizes, the real `IPEnumeration` candidate list in list order, the interfaces the LAN code sees, the destinations `LANSelectBroadcastDestinations()` picks, and what `GetLocalAddressForPeer()` answers. |
+| `selftest` | Regression tests for the pure address logic in `NetworkUtil.cpp`. Needs no socket and no second machine, so it covers the multi-homed cases a single-interface host cannot reproduce. Exit code is non-zero on failure. |
 | `send <bindIP\|any> <bindPort> <dstIP> <dstPort> <name> [repeats]` | Queues a real `LANMessage` through a real `Transport` and pumps it. Reports whether the out buffer drained. |
 | `listen <bindIP\|any> <bindPort> <seconds> <claimedLocalIP>` | Receives through a real `Transport` and decodes each datagram, showing the source address and whether `LANAPI::update()`'s self-echo test would have dropped it. |
 | `selfecho <port> <broadcastDst> <claimedLocalIP>` | Broadcasts and listens on one socket, i.e. what a real client sees of its own announce. |
@@ -76,7 +77,7 @@ Everything here was produced by running the harness, not by reading code.
    nowhere. So picking the wrong local interface produces a completely silent
    black hole, not an error.
 
-6. **A send to `0.0.0.0` wedges an out-buffer slot forever.** `UDP::Write`
+6. **A send to `0.0.0.0` used to wedge an out-buffer slot forever.** `UDP::Write`
    returns `ADDRNOTAVAIL` without ever calling `sendto`, `Transport::doSend`
    leaves `length` non-zero so the slot is never reused, and
    `Transport::update()` still returns `TRUE`, so nothing upstream notices:
@@ -87,6 +88,9 @@ Everything here was produced by running the harness, not by reading code.
    dst=0.0.0.0 pass=2 transportUpdate=1 outBuffer occupied=1
    ```
 
+   `Transport::doSend` now discards a message whose destination address or port
+   is zero, so the same run reports `occupied=0`.
+
 ## What this container could not test
 
 * No `CAP_NET_ADMIN` and no permission to unshare a network namespace, so a
@@ -95,3 +99,17 @@ Everything here was produced by running the harness, not by reading code.
   address a peer observes — **could not be reproduced end to end here**. The
   address-selection logic is covered by unit tests instead.
 * No macOS, no Flatpak sandbox, no second physical machine, no game UI.
+
+## Which assertions encode which bug
+
+`selftest` is written so that the assertions fail against the code as it was
+before the issue #86 work:
+
+* *"announces on every broadcast domain, not just one"* — the old
+  `GatherSubnetBroadcastAddrs()` filtered the interface list down to the one
+  whose address equalled `m_localIP` and, having found it, suppressed the
+  `255.255.255.255` fallback.
+* *"never sends to 0.0.0.0"* — the old code passed `ifa_broadaddr` through
+  unchecked, and a zero destination wedges a transport slot (observation 6).
+* *"an address on another local interface is recognised as ours"* — the old
+  self-echo test in `LANAPI::update()` was `senderIP == m_localIP` (observation 3).

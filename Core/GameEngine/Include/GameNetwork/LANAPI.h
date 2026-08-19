@@ -31,6 +31,7 @@
 #include "GameNetwork/Transport.h"
 #include "GameNetwork/NetworkInterface.h"
 #include "GameNetwork/NetworkDefs.h"
+#include "GameNetwork/networkutil.h"
 #include "GameNetwork/LANPlayer.h"
 #include "GameNetwork/LANGameInfo.h"
 
@@ -387,7 +388,12 @@ protected:
 	UnsignedInt					m_localIP;
 	Transport*					m_transport;
 
-	UnsignedInt					m_broadcastAddr;
+	// GeneralsX @bugfix Claude 19/08/2026 Cache of this machine's IPv4 interfaces (issue #86).
+	// Discovery announces on every broadcast domain in here, and a datagram from any of these
+	// addresses is our own echo rather than a peer. Refreshed on rebind and on the resend tick.
+	LANLocalInterface		m_localInterfaces[MAX_LAN_LOCAL_INTERFACES];
+	Int									m_localInterfaceCount;
+
 
 	UnsignedInt					m_lastUpdate;
 	AsciiString					m_lastGameopt; /// @todo: hack for demo - remove this
@@ -396,6 +402,13 @@ protected:
 
 protected:
 	void sendMessage(LANMessage *msg, UnsignedInt ip = 0); // Convenience function
+
+	// GeneralsX @bugfix Claude 19/08/2026 Local address bookkeeping for issue #86.
+	void refreshLocalInterfaces();									///< re-read this machine's interface list
+	Bool isLocalAddress(UnsignedInt ip) const;			///< TRUE if ip belongs to this machine
+	void adoptLocalAddressForPeer(UnsignedInt peerIP);	///< use the address that actually reaches peerIP
+	Bool isJoinReplyForUs(UnsignedInt replyPlayerIP);	///< TRUE if a join accept/deny answers our join
+
 	void removePlayer(LANPlayer *player);
 	void removeGame(LANGameInfo *game);
 	void addPlayer(LANPlayer *player);

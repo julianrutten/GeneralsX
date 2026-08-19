@@ -510,13 +510,44 @@ void LANAPI::handleRequestJoin( LANMessage *msg, UnsignedInt senderIP )
 	RequestGameOptions(GenerateGameOptionsString(), true);
 }
 
+// GeneralsX @bugfix Claude 19/08/2026 Decide whether a join accept/deny is meant for us (#86).
+//
+// GameJoined.playerIP is the source address the host observed for our join request. m_localIP is
+// whatever the lobby UI picked out of our own interface list. On a machine with more than one
+// address those are two independent quantities, and the old test - plain equality - silently
+// dropped a perfectly good reply, which is exactly the reported symptom: the host lists the
+// joining player while the joiner times out five seconds later with nothing logged.
+//
+// Accept the reply when it names any address of this machine and we are in fact waiting on a join,
+// then move m_localIP to the address the host saw, because that is the one that demonstrably
+// carries traffic between the two of us. Everything downstream - our slot IP, getLocalSlotNum(),
+// the in-game connection - is keyed off m_localIP and has to agree with the host's view.
+Bool LANAPI::isJoinReplyForUs( UnsignedInt replyPlayerIP )
+{
+	if (replyPlayerIP == m_localIP)
+	{
+		return TRUE;
+	}
+
+	if (m_pendingAction != ACT_JOIN || !isLocalAddress(replyPlayerIP))
+	{
+		return FALSE;
+	}
+
+	DEBUG_LOG(("LANAPI::isJoinReplyForUs - host saw us as %d.%d.%d.%d, we were using %d.%d.%d.%d; adopting theirs",
+		PRINTF_IP_AS_4_INTS(replyPlayerIP), PRINTF_IP_AS_4_INTS(m_localIP)));
+
+	m_localIP = replyPlayerIP;
+	return TRUE;
+}
+
 void LANAPI::handleJoinAccept( LANMessage *msg, UnsignedInt senderIP )
 {
 	// GeneralsX @build GitHubCopilot 12/04/2026 Trace directed join-accept processing and pending action transitions for LAN/direct-connect debugging.
 	/* 	fprintf(stderr, "[LAN86] handleJoinAccept sender=%d.%d.%d.%d playerIP=%d.%d.%d.%d localIP=%d.%d.%d.%d pending=%d slot=%d game=%ls\n",
 		PRINTF_IP_AS_4_INTS(senderIP), PRINTF_IP_AS_4_INTS(msg->GameJoined.playerIP), PRINTF_IP_AS_4_INTS(m_localIP),
 		m_pendingAction, msg->GameJoined.slotPosition, GetWindowsWideCharAsWchar(msg->GameJoined.gameName)); */
-	if (msg->GameJoined.playerIP == m_localIP) // Is it for us?
+	if (isJoinReplyForUs(msg->GameJoined.playerIP)) // Is it for us?
 	{
 		if (m_pendingAction == ACT_JOIN) // Are we trying to join?
 		{
@@ -575,7 +606,7 @@ void LANAPI::handleJoinDeny( LANMessage *msg, UnsignedInt senderIP )
 	/* 	fprintf(stderr, "[LAN86] handleJoinDeny sender=%d.%d.%d.%d playerIP=%d.%d.%d.%d localIP=%d.%d.%d.%d pending=%d reason=%d game=%ls\n",
 		PRINTF_IP_AS_4_INTS(senderIP), PRINTF_IP_AS_4_INTS(msg->GameJoined.playerIP), PRINTF_IP_AS_4_INTS(m_localIP),
 		m_pendingAction, msg->GameNotJoined.reason, GetWindowsWideCharAsWchar(msg->GameNotJoined.gameName)); */
-	if (msg->GameJoined.playerIP == m_localIP) // Is it for us?
+	if (isJoinReplyForUs(msg->GameJoined.playerIP)) // Is it for us?
 	{
 		if (m_pendingAction == ACT_JOIN) // Are we trying to join?
 		{

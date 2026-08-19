@@ -107,6 +107,147 @@ UnsignedInt ResolveIP(AsciiString host)
   return ( ntohl(hostNode->s_addr) );
 }
 
+// GeneralsX @bugfix Claude 19/08/2026 Shared, testable helpers for LAN lobby address handling (issue #86).
+
+/**
+ * Collect the destinations a LAN discovery/announce packet has to be sent to.
+ *
+ * The lobby used to send to the subnet broadcast of one hand-picked interface
+ * and, when it found one, skip the global broadcast entirely. That makes the
+ * whole of discovery depend on having guessed the right interface, and a
+ * broadcast sent to a subnet this machine is not on is accepted by the socket
+ * layer without any error, so a wrong guess is completely silent. Announce on
+ * every broadcast domain we are actually attached to instead.
+ */
+Int LANSelectBroadcastDestinations( const LANLocalInterface *ifaces, Int ifaceCount,
+																		UnsignedInt *outAddrs, Int maxAddrs )
+{
+	if (outAddrs == nullptr || maxAddrs <= 0)
+	{
+		return 0;
+	}
+
+	Int count = 0;
+
+	for (Int i = 0; (i < ifaceCount) && (count < maxAddrs); ++i)
+	{
+		const UnsignedInt bcast = ifaces[i].broadcast;
+
+		// A zero broadcast address is not a destination. Queuing one wedges a
+		// transport out-buffer slot for good, because UDP::Write rejects it
+		// before sendto and Transport::doSend only frees the slot on success.
+		if (!ifaces[i].canBroadcast || bcast == 0)
+		{
+			continue;
+		}
+
+		Bool duplicate = FALSE;
+		for (Int j = 0; j < count; ++j)
+		{
+			if (outAddrs[j] == bcast)
+			{
+				duplicate = TRUE;
+				break;
+			}
+		}
+
+		if (!duplicate)
+		{
+			outAddrs[count++] = bcast;
+		}
+	}
+
+	// No usable interface broadcast address, so fall back to the limited
+	// broadcast address. This is also the Windows path, which passes no
+	// interfaces at all and therefore keeps its retail behaviour exactly.
+	if (count == 0)
+	{
+		outAddrs[count++] = INADDR_BROADCAST;
+	}
+
+	return count;
+}
+
+/**
+ * TRUE when addr belongs to this machine.
+ *
+ * LANAPI drops datagrams from itself by comparing the source address against
+ * the single address it picked for itself. Broadcasts loop back to the sending
+ * host, so on a machine with more than one address that test can fail and the
+ * client ends up listing its own announce as a remote peer.
+ */
+Bool LANIsLocalAddress( const LANLocalInterface *ifaces, Int ifaceCount,
+												UnsignedInt selectedLocalIP, UnsignedInt addr )
+{
+	if (addr == 0)
+	{
+		return FALSE;
+	}
+
+	if (addr == selectedLocalIP)
+	{
+		return TRUE;
+	}
+
+	for (Int i = 0; i < ifaceCount; ++i)
+	{
+		if (ifaces[i].address == addr)
+		{
+			return TRUE;
+		}
+	}
+
+	return FALSE;
+}
+
+/**
+ * Ask the routing table which local address we would send from when talking to
+ * peerIP. connect() on a datagram socket transmits nothing; it just binds the
+ * local end, which is exactly the address the peer will see as our source.
+ */
+UnsignedInt GetLocalAddressForPeer( UnsignedInt peerIP )
+{
+	if (peerIP == 0 || peerIP == INADDR_BROADCAST)
+	{
+		return 0;
+	}
+
+	const SOCKET sock = socket(AF_INET, SOCK_DGRAM, 0);
+	if (sock == INVALID_SOCKET)
+	{
+		return 0;
+	}
+
+	sockaddr_in peer;
+	memset(&peer, 0, sizeof(peer));
+	peer.sin_family = AF_INET;
+	peer.sin_addr.s_addr = htonl(peerIP);
+	peer.sin_port = htons(1);	// never used, connect() on UDP sends nothing
+
+	UnsignedInt localIP = 0;
+	if (connect(sock, (struct sockaddr *)&peer, sizeof(peer)) == 0)
+	{
+		sockaddr_in local;
+		memset(&local, 0, sizeof(local));
+		socklen_t localLen = sizeof(local);
+		if (getsockname(sock, (struct sockaddr *)&local, &localLen) == 0
+			&& local.sin_family == AF_INET)
+		{
+			localIP = ntohl(local.sin_addr.s_addr);
+		}
+	}
+
+	closesocket(sock);
+
+	// A connect() to an address the host has no route to yields nothing usable.
+	if (localIP == INADDR_ANY || localIP == INADDR_NONE)
+	{
+		return 0;
+	}
+
+	return localIP;
+}
+
 /**
  * Returns the next network command ID.
  */

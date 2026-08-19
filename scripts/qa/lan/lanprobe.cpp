@@ -25,31 +25,36 @@ static void fmtIP(UnsignedInt ip, char *out) {
 	sprintf(out, "%d.%d.%d.%d", PRINTF_IP_AS_4_INTS(ip));
 }
 
-// Verbatim copy of LANAPI.cpp's static GatherSubnetBroadcastAddrs so we can
-// observe what the shipping send path would choose for a given m_localIP.
-static Int GatherSubnetBroadcastAddrs(UnsignedInt localIP, UnsignedInt *outAddrs, Int maxAddrs)
+// The real interface gather LANAPI uses lives in LANAPI.cpp as a static, so it
+// is re-derived here from getifaddrs with the same rules. The two functions it
+// feeds - LANSelectBroadcastDestinations and LANIsLocalAddress - are the real
+// shared ones out of NetworkUtil.cpp, which is what the selftest exercises.
+static Int gatherLocalInterfaces(LANLocalInterface *out, Int maxCount)
 {
-	if (outAddrs == nullptr || maxAddrs <= 0) return 0;
 	Int count = 0;
 	struct ifaddrs *ifaddr = nullptr;
 	if (getifaddrs(&ifaddr) != 0) return 0;
-	for (struct ifaddrs *ifa = ifaddr; ifa != nullptr; ifa = ifa->ifa_next)
+	for (struct ifaddrs *ifa = ifaddr; ifa != nullptr && count < maxCount; ifa = ifa->ifa_next)
 	{
 		if (ifa->ifa_addr == nullptr || ifa->ifa_addr->sa_family != AF_INET) continue;
-		if ((ifa->ifa_flags & IFF_UP) == 0 || (ifa->ifa_flags & IFF_LOOPBACK) != 0) continue;
-		const sockaddr_in *addr = reinterpret_cast<const sockaddr_in *>(ifa->ifa_addr);
-		const UnsignedInt hostAddr = ntohl(addr->sin_addr.s_addr);
-		if (localIP != 0 && hostAddr != localIP) continue;
-		UnsignedInt bcast = 0;
-		if (ifa->ifa_broadaddr != nullptr && ifa->ifa_broadaddr->sa_family == AF_INET) {
-			bcast = ntohl(reinterpret_cast<const sockaddr_in *>(ifa->ifa_broadaddr)->sin_addr.s_addr);
-		} else if (ifa->ifa_netmask != nullptr && ifa->ifa_netmask->sa_family == AF_INET) {
-			const UnsignedInt mask = ntohl(reinterpret_cast<const sockaddr_in *>(ifa->ifa_netmask)->sin_addr.s_addr);
-			bcast = (hostAddr & mask) | (~mask);
-		} else continue;
-		Bool dup = FALSE;
-		for (Int i = 0; i < count; ++i) if (outAddrs[i] == bcast) { dup = TRUE; break; }
-		if (!dup && count < maxAddrs) outAddrs[count++] = bcast;
+		if ((ifa->ifa_flags & IFF_UP) == 0) continue;
+		const UnsignedInt hostAddr = ntohl(reinterpret_cast<const sockaddr_in *>(ifa->ifa_addr)->sin_addr.s_addr);
+		if (hostAddr == 0) continue;
+		LANLocalInterface &e = out[count];
+		e.address = hostAddr;
+		e.broadcast = 0;
+		e.canBroadcast = ((ifa->ifa_flags & IFF_LOOPBACK) == 0)
+			&& ((ifa->ifa_flags & IFF_POINTOPOINT) == 0)
+			&& ((ifa->ifa_flags & IFF_BROADCAST) != 0);
+		if (e.canBroadcast) {
+			if (ifa->ifa_broadaddr != nullptr && ifa->ifa_broadaddr->sa_family == AF_INET)
+				e.broadcast = ntohl(reinterpret_cast<const sockaddr_in *>(ifa->ifa_broadaddr)->sin_addr.s_addr);
+			else if (ifa->ifa_netmask != nullptr && ifa->ifa_netmask->sa_family == AF_INET) {
+				const UnsignedInt mask = ntohl(reinterpret_cast<const sockaddr_in *>(ifa->ifa_netmask)->sin_addr.s_addr);
+				e.broadcast = (hostAddr & mask) | (~mask);
+			}
+		}
+		++count;
 	}
 	freeifaddrs(ifaddr);
 	return count;
@@ -74,20 +79,25 @@ static int modeEnumerate()
 		++n;
 	}
 	if (n == 0) printf("  (none)\n");
-	printf("--- GatherSubnetBroadcastAddrs() per candidate ---\n");
-	for (EnumeratedIP *p = list; p != nullptr; p = p->getNext()) {
-		UnsignedInt b[8];
-		Int c = GatherSubnetBroadcastAddrs(p->getIP(), b, 8);
-		char a[32]; fmtIP(p->getIP(), a);
-		printf("  localIP=%-16s -> %d dst(s):", a, c);
-		for (Int i = 0; i < c; ++i) { char d[32]; fmtIP(b[i], d); printf(" %s", d); }
-		if (c == 0) printf(" (none -> falls back to 255.255.255.255)");
-		printf("\n");
+	printf("--- local interfaces seen by the LAN code ---\n");
+	LANLocalInterface ifaces[MAX_LAN_LOCAL_INTERFACES];
+	const Int ifaceCount = gatherLocalInterfaces(ifaces, ARRAY_SIZE(ifaces));
+	for (Int i = 0; i < ifaceCount; ++i) {
+		char a[32], b[32];
+		fmtIP(ifaces[i].address, a); fmtIP(ifaces[i].broadcast, b);
+		printf("  %-16s broadcast=%-16s canBroadcast=%d\n", a, b, (int)ifaces[i].canBroadcast);
 	}
-	UnsignedInt b[8];
-	Int c = GatherSubnetBroadcastAddrs(0xC0A8FE01u /* 192.168.254.1, not on this host */, b, 8);
-	printf("  localIP=192.168.254.1  -> %d dst(s)%s\n", c,
-		(c == 0) ? " (none -> falls back to 255.255.255.255)" : "");
+	printf("--- LANSelectBroadcastDestinations() ---\n");
+	UnsignedInt dsts[MAX_LAN_LOCAL_INTERFACES + 1];
+	const Int dstCount = LANSelectBroadcastDestinations(ifaces, ifaceCount, dsts, ARRAY_SIZE(dsts));
+	for (Int i = 0; i < dstCount; ++i) { char d[32]; fmtIP(dsts[i], d); printf("  %s\n", d); }
+	printf("--- GetLocalAddressForPeer() ---\n");
+	const UnsignedInt probes[] = { 0x08080808u /*8.8.8.8*/, 0x7F000001u /*127.0.0.1*/ };
+	for (size_t i = 0; i < ARRAY_SIZE(probes); ++i) {
+		char p[32], r[32];
+		fmtIP(probes[i], p); fmtIP(GetLocalAddressForPeer(probes[i]), r);
+		printf("  peer %-16s -> local %s\n", p, r);
+	}
 	return 0;
 }
 
@@ -224,6 +234,133 @@ static UnsignedInt parseIP(const char *s)
 	return (a << 24) | (b << 16) | (c << 8) | d;
 }
 
+
+// ------------------------------------------------------------- selftest ----
+// Regression tests for the pure address logic in NetworkUtil.cpp. These need no
+// socket and no second machine, so they cover the multi-homed cases that cannot
+// be reproduced by running the harness on a single-interface host.
+
+static int s_failures = 0;
+
+static void check(Bool cond, const char *what)
+{
+	printf("  %-4s %s\n", cond ? "ok" : "FAIL", what);
+	if (!cond) ++s_failures;
+}
+
+static LANLocalInterface mkIface(const char *addr, const char *bcast, Bool canBroadcast)
+{
+	LANLocalInterface i;
+	i.address = parseIP(addr);
+	i.broadcast = bcast ? parseIP(bcast) : 0;
+	i.canBroadcast = canBroadcast;
+	return i;
+}
+
+static int modeSelfTest()
+{
+	UnsignedInt out[MAX_LAN_LOCAL_INTERFACES + 1];
+
+	printf("LANSelectBroadcastDestinations\n");
+	{
+		// Windows and any other caller with no interface list must keep the
+		// retail behaviour: one limited broadcast.
+		Int n = LANSelectBroadcastDestinations(nullptr, 0, out, ARRAY_SIZE(out));
+		check(n == 1 && out[0] == INADDR_BROADCAST, "empty interface list yields 255.255.255.255");
+	}
+	{
+		// The issue #86 shape: a developer/container box where the numerically
+		// lowest address is a bridge and the real LAN is somewhere else. Both
+		// broadcast domains have to be announced on, in any order.
+		LANLocalInterface ifaces[] = {
+			mkIface("172.18.0.1", "172.18.255.255", TRUE),   // docker-compose br-xxxx
+			mkIface("192.168.1.10", "192.168.1.255", TRUE),  // the actual LAN
+		};
+		Int n = LANSelectBroadcastDestinations(ifaces, 2, out, ARRAY_SIZE(out));
+		Bool sawLAN = FALSE, sawBridge = FALSE;
+		for (Int i = 0; i < n; ++i) {
+			if (out[i] == parseIP("192.168.1.255")) sawLAN = TRUE;
+			if (out[i] == parseIP("172.18.255.255")) sawBridge = TRUE;
+		}
+		check(n == 2 && sawLAN && sawBridge, "announces on every broadcast domain, not just one");
+	}
+	{
+		// A zero broadcast address must never be queued: UDP::Write rejects it
+		// before sendto and the transport slot would be wedged for good.
+		LANLocalInterface ifaces[] = { mkIface("10.0.0.5", nullptr, TRUE) };
+		Int n = LANSelectBroadcastDestinations(ifaces, 1, out, ARRAY_SIZE(out));
+		check(n == 1 && out[0] == INADDR_BROADCAST, "interface with no broadcast address falls back, never sends to 0.0.0.0");
+	}
+	{
+		// Loopback and point-to-point tunnels are not broadcast domains.
+		LANLocalInterface ifaces[] = {
+			mkIface("127.0.0.1", "127.255.255.255", FALSE),
+			mkIface("10.8.0.2", "10.8.0.255", FALSE),
+		};
+		Int n = LANSelectBroadcastDestinations(ifaces, 2, out, ARRAY_SIZE(out));
+		check(n == 1 && out[0] == INADDR_BROADCAST, "non-broadcast interfaces are skipped");
+	}
+	{
+		// Two addresses on one subnet must not produce two identical sends.
+		LANLocalInterface ifaces[] = {
+			mkIface("192.168.1.10", "192.168.1.255", TRUE),
+			mkIface("192.168.1.11", "192.168.1.255", TRUE),
+		};
+		Int n = LANSelectBroadcastDestinations(ifaces, 2, out, ARRAY_SIZE(out));
+		check(n == 1 && out[0] == parseIP("192.168.1.255"), "duplicate broadcast addresses collapse");
+	}
+	{
+		LANLocalInterface ifaces[] = {
+			mkIface("192.168.1.10", "192.168.1.255", TRUE),
+			mkIface("172.18.0.1", "172.18.255.255", TRUE),
+		};
+		Int n = LANSelectBroadcastDestinations(ifaces, 2, out, 1);
+		check(n == 1, "respects maxAddrs");
+	}
+
+	printf("LANIsLocalAddress\n");
+	{
+		LANLocalInterface ifaces[] = {
+			mkIface("172.18.0.1", "172.18.255.255", TRUE),
+			mkIface("192.168.1.10", "192.168.1.255", TRUE),
+		};
+		// The self-echo test used to compare only against the one selected
+		// address, so a client whose broadcast went out of the other interface
+		// listed its own announce as a remote player.
+		check(LANIsLocalAddress(ifaces, 2, parseIP("172.18.0.1"), parseIP("192.168.1.10")),
+			"an address on another local interface is recognised as ours");
+		check(LANIsLocalAddress(ifaces, 2, parseIP("172.18.0.1"), parseIP("172.18.0.1")),
+			"the selected address is ours");
+		check(!LANIsLocalAddress(ifaces, 2, parseIP("172.18.0.1"), parseIP("192.168.1.11")),
+			"a peer address is not ours");
+		check(!LANIsLocalAddress(ifaces, 2, parseIP("172.18.0.1"), 0),
+			"0.0.0.0 is not ours");
+		// With no interface list the behaviour degrades to plain equality,
+		// which is what the Windows path relies on.
+		check(LANIsLocalAddress(nullptr, 0, parseIP("192.168.1.10"), parseIP("192.168.1.10")),
+			"with no interface list, equality with the selected address still holds");
+		check(!LANIsLocalAddress(nullptr, 0, parseIP("192.168.1.10"), parseIP("192.168.1.11")),
+			"with no interface list, other addresses are not ours");
+	}
+
+	printf("GetLocalAddressForPeer\n");
+	{
+		check(GetLocalAddressForPeer(0) == 0, "no answer for 0.0.0.0");
+		check(GetLocalAddressForPeer(INADDR_BROADCAST) == 0, "no answer for the broadcast address");
+		check(GetLocalAddressForPeer(parseIP("127.0.0.1")) == parseIP("127.0.0.1"),
+			"loopback peer resolves to the loopback address");
+		LANLocalInterface ifaces[MAX_LAN_LOCAL_INTERFACES];
+		Int n = gatherLocalInterfaces(ifaces, ARRAY_SIZE(ifaces));
+		UnsignedInt routed = GetLocalAddressForPeer(parseIP("8.8.8.8"));
+		check(routed == 0 || LANIsLocalAddress(ifaces, n, 0, routed),
+			"the routed source address is one of this machine's addresses");
+	}
+
+	printf("%s (%d failure%s)\n", s_failures ? "SELFTEST FAILED" : "selftest passed",
+		s_failures, (s_failures == 1) ? "" : "s");
+	return s_failures ? 1 : 0;
+}
+
 int main(int argc, char **argv)
 {
 	__argc = argc; __argv = argv;
@@ -231,6 +368,7 @@ int main(int argc, char **argv)
 		fprintf(stderr,
 			"usage:\n"
 			"  lanprobe enumerate\n"
+			"  lanprobe selftest\n"
 			"  lanprobe send   <bindIP|any> <bindPort> <dstIP> <dstPort> <name> [repeats]\n"
 			"  lanprobe listen <bindIP|any> <bindPort> <seconds> <claimedLocalIP>\n"
 			"  lanprobe selfecho  <port> <broadcastDst> <claimedLocalIP>\n"
@@ -239,6 +377,7 @@ int main(int argc, char **argv)
 		return 2;
 	}
 	if (!strcmp(argv[1], "enumerate")) return modeEnumerate();
+	if (!strcmp(argv[1], "selftest")) return modeSelfTest();
 	if (!strcmp(argv[1], "send") && argc >= 7) {
 		UnsignedInt bind = strcmp(argv[2], "any") ? parseIP(argv[2]) : 0;
 		wchar_t wname[64];
