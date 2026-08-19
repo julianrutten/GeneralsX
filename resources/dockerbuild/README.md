@@ -7,7 +7,8 @@ This directory contains Dockerfiles for GeneralsX development environments.
 ### `Dockerfile.dev`
 **Image**: `generalsx/linux-dev:latest`
 **Purpose**: Native Linux development environment for GeneralsX and GeneralsXZH, and the
-base image godmode layers agent tooling onto (see `godmode.yaml`).
+base image godmode layers agent tooling onto (see `godmode.yaml`, which lives in the private
+`devmastersbv/godmode-env` overlay rather than this repository).
 **Base**: Ubuntu 24.04 (linux/amd64) - the series CI's `ubuntu-latest` resolves to
 
 **Includes**:
@@ -34,8 +35,9 @@ docker run --rm -v "$PWD:/work" -w /work generalsx/linux-dev:latest \
 ```
 
 There is no Compose file for this image, and it needs none: the repository runs no services.
-godmode builds this Dockerfile directly through `agent.base_dockerfile` in the repository-root
-`godmode.yaml` and layers its agent tooling on top.
+godmode builds this Dockerfile directly through `agent.base_dockerfile` in `godmode.yaml`,
+which is not committed here - it lives in the private `devmastersbv/godmode-env` overlay, at
+`julianrutten/GeneralsX/godmode.yaml` - and layers its agent tooling on top.
 
 See [docs/WORKDIR/support/DEV_CONTAINER.md](../../docs/WORKDIR/support/DEV_CONTAINER.md) for
 the dependency analysis behind this image, how it differs from `Dockerfile.linux`, the godmode
