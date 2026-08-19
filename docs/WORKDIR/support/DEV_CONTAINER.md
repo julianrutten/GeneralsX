@@ -1,13 +1,16 @@
 # Linux Dev Container (`Dockerfile.dev`)
 
 Findings from an audit of the Linux build, and the container tooling that came out of it:
-`resources/dockerbuild/Dockerfile.dev`, `resources/dockerbuild/compose.dev.yml` and the
-repository-root `godmode.yaml`.
+`resources/dockerbuild/Dockerfile.dev` and the repository-root `godmode.yaml`.
+
+There is no Compose file. This repository runs no services - it is a desktop game, with no
+server, no database and nothing to keep up - and the image is named to godmode directly, by
+path, through `agent.base_dockerfile`.
 
 > **Status: unbuilt and unverified.** The image was written from repository evidence only.
-> The author had no Docker socket and no `docker` CLI, so it has never been built or run.
-> The [Build and verify](#build-and-verify) section is a single pass that a person with
-> Docker can run to settle that.
+> The author had no Docker socket and no `docker` CLI, so it has never been built or run, and
+> neither has the godmode wiring been applied. The [Build and verify](#5-build-and-verify)
+> section is a single pass that a person with Docker can run to settle that.
 
 ---
 
@@ -176,17 +179,21 @@ resolve the `vcpkg.json` baseline, which is a different commit).
 | Version pinning | unpinned clone, drifts from CI | pinned to the CI commit |
 | Updating vcpkg | `git pull` on the host | rebuild the image |
 
-For an agent container, "works with zero host-side setup" decides it. The compose file then
-puts the vcpkg **binary cache** on a named volume, so compiled ports survive container
-recreation without putting the toolchain itself outside the image.
+For an agent container, "works with zero host-side setup" decides it. Baking also removes the
+need for a cache volume: the **binary-cache prewarm is an image layer**, so every container
+started from the image already has the compiled ports. What is not persisted is anything
+compiled *after* a container starts - a `vcpkg.json` bump, say. Those are rebuilt in each new
+container until the image is rebuilt, and rebuilding is the designed path, because the
+manifest `COPY` invalidates the prewarm layer exactly when the manifest changes.
 
 **Layering.** No game source is ever `COPY`ed. The layers are: apt -> CMake -> vcpkg clone ->
 `COPY vcpkg.json vcpkg-lock.json triplets/` -> binary-cache prewarm. A `.cpp` edit touches
 none of them; only a dependency-manifest change invalidates the prewarm.
 
-A root `.dockerignore` was added for this: the compose build context is the repository root,
-which is ~500k LOC plus `references/` and `build/`, and the image needs exactly three paths
-out of it. It excludes everything and re-includes `vcpkg.json`, `vcpkg-lock.json` and
+A root `.dockerignore` was added for this: the build context is the repository root - godmode
+passes the worktree as the context for `agent.base_dockerfile`, and the hand build below runs
+`docker build ... .` from the root - which is ~500k LOC plus `references/` and `build/`, and
+the image needs exactly three paths out of it. It excludes everything and re-includes `vcpkg.json`, `vcpkg-lock.json` and
 `triplets/`. The older images are built by `scripts/env/docker/docker-build-images.sh` with
 `resources/dockerbuild/` as their context and are unaffected. (`.gitignore` ignores all
 dotfiles by default, so `!.dockerignore` had to be added to its allowlist.)
@@ -207,11 +214,33 @@ for the replay harness; `vulkan-tools` for the "DXVK needs Vulkan" pitfall in `A
 
 ## 4. godmode wiring
 
-`godmode.yaml` declares `compose.files`, `agent.base_service: builder` and
-`agent.workdir: /work`. godmode takes the builder service's image and layers its own agent
-tooling (node, claude, codex, opencode, tmux, playwright) on top.
+`godmode.yaml` at the repository root is the whole of it:
 
-Four constraints the image respects, all of them things that have broken before:
+```yaml
+version: 1
+name: generalsx
+
+agent:
+  base_dockerfile: resources/dockerbuild/Dockerfile.dev
+  workdir: /work
+```
+
+godmode builds that Dockerfile with the worktree as the build context, tags the result as this
+repository's agent base image, and layers its own agent tooling (node, claude, codex, opencode,
+tmux, playwright) on top. `base_dockerfile` takes **no build arguments and no separate build
+context** - `base_args:` and `base_context:` do not exist and are refused by the decoder - so
+the image must build as-is from the repository root. It is also mutually exclusive with
+`agent.image` and `agent.base_service`; declaring two is refused.
+
+**What this file may contain.** GeneralsX is a godmode *workspace* repository: it renders no
+Compose project. Such a file is validated against a stricter schema that refuses, by name,
+every section a repository with no Compose project cannot act on - `slug`, `compose.files`,
+`routes`, `scope`, `shared`, `database`, `templates`, `bootstrap`, `health`, `inject`,
+`tenancy`, `verify`, `uses`, `logins` and `agent.base_service`. Any one of them fails `up` for
+the whole repository. `version` and `name` are required, and `name` must be lowercase
+alphanumeric with dashes - `generalsx`, not `GeneralsX`.
+
+Three constraints the image respects, all of them things that have broken before:
 
 1. **glibc Debian/Ubuntu.** The layering step checks for `apt-get` and for
    `getconf GNU_LIBC_VERSION` and fails the whole `up`, naming the repository, if either is
@@ -222,14 +251,30 @@ Four constraints the image respects, all of them things that have broken before:
    survive Debian's `/etc/profile`; this fleet has already lost a Go toolchain that was
    installed, present and unusable that way. `cmake`, `ctest`, `cpack` and `vcpkg` are
    symlinked into `/usr/local/bin`; everything else is a distro package in `/usr/bin`.
-4. **The service must stay up.** Declaring a service turns this from a godmode *workspace*
-   repo into an ordinary one, and a service that runs and exits takes the environment down
-   with it. `builder` runs `sleep infinity`.
 
-`agent.workdir` is `/work` because that is where `compose.dev.yml` bind-mounts the checkout,
-and because every `scripts/build/linux/docker-*.sh` already uses `-v "$PWD:/work" -w /work` -
-they even discard `build/<preset>` when its CMake cache was not generated with
-`CMAKE_HOME_DIRECTORY == /work`. Same path in agent output and in build output.
+(The fourth constraint this document used to carry - "the service must stay up" - is gone with
+the Compose file. A workspace repository starts no services, so nothing has to be kept alive
+with `sleep infinity`.)
+
+`agent.workdir` is `/work` **deliberately, and it is load-bearing rather than cosmetic**:
+every `scripts/build/linux/docker-*.sh` runs the build with `-v "$PWD:/work" -w /work`, and
+each of them discards `build/<preset>` when that directory's `CMakeCache.txt` was not
+generated with `CMAKE_HOME_DIRECTORY == /work`
+(`docker-configure-linux.sh:74`, `docker-build-linux-zh.sh:80`,
+`docker-build-linux-generals.sh:80`). Mount the checkout anywhere else and an agent's
+configure output is thrown away by the next script run, and the script's by the next agent.
+`Dockerfile.dev`'s `WORKDIR` is `/work` for the same reason.
+
+**What the deleted Compose file used to supply, and what replaces it:**
+
+| Compose provided | Now |
+|---|---|
+| the checkout at `/work` | godmode mounts the worktree at `agent.workdir` |
+| named volume for the vcpkg binary cache | not needed for the prewarm, which is an image layer; ports compiled after container start are lost on container recreation (rebuild the image, or mount a volume by hand) |
+| named volume for ccache | `/ccache` is container-local. It still pays inside one long-lived container; a recreated container starts cold. Mount `-v generalsx-ccache:/ccache` by hand to keep it |
+| headless run env (`SDL_VIDEODRIVER=dummy`, ...) | exported per run, as `replay-tests.yml` does - see the block in section 5 |
+| `platform: linux/amd64` | pass `--platform linux/amd64` on a hand build; a Dockerfile cannot pin its own platform |
+| `ulimits: nofile` | dropped; it was container hygiene, not derived from any file in this repository |
 
 Applying this is a person's job: `godmode up` / `godmode repo` were deliberately not run.
 
@@ -237,59 +282,85 @@ Applying this is a person's job: `godmode up` / `godmode repo` were deliberately
 
 ## 5. Build and verify
 
-One pass, from the repository root, on a machine with Docker.
+One pass, from the repository root, on a machine with Docker. No Compose is involved; this is
+the same path godmode takes, plus a container to run the build in.
 
 ```bash
-# 1. Build the image (slow: the vcpkg binary-cache prewarm dominates)
-docker compose -f resources/dockerbuild/compose.dev.yml build builder
+# 1. Build the image (slow: the vcpkg binary-cache prewarm dominates).
+#    The context is the repository root - that is what .dockerignore is trimming - and
+#    --platform matters on an Apple Silicon host: the presets target x86_64 only.
+docker build --platform linux/amd64 \
+    -f resources/dockerbuild/Dockerfile.dev \
+    -t generalsx/linux-dev:latest .
 
 # 2. Did the prewarm succeed? Absence of the marker means yes.
 docker run --rm generalsx/linux-dev:latest \
     sh -c 'ls /opt/vcpkg-cache/PREWARM_FAILED 2>/dev/null && echo COLD_CACHE || echo PREWARM_OK'
 
-# 3. Toolchain sanity, and the two godmode preconditions
+# 3. Toolchain sanity, and the godmode preconditions
 docker run --rm generalsx/linux-dev:latest \
     bash -lc 'cmake --version && ninja --version && gcc --version | head -1 \
               && clang-tidy --version | head -2 && vcpkg version | head -1 \
               && echo "VCPKG_ROOT=$VCPKG_ROOT" \
               && getconf GNU_LIBC_VERSION && command -v apt-get'
 
-# 4. Bring the long-lived builder up
-docker compose -f resources/dockerbuild/compose.dev.yml up -d builder
-docker compose -f resources/dockerbuild/compose.dev.yml ps   # must show "running", not "exited"
+# 4. Start a long-lived container to work in. The two volumes are optional and only buy
+#    persistence across `docker rm`: Docker seeds a fresh named volume from the image
+#    content on first mount, so the prewarmed vcpkg cache is preserved rather than shadowed.
+docker run -d --name generalsx-dev --platform linux/amd64 \
+    -v "$PWD:/work" -w /work \
+    -v generalsx-vcpkg-cache:/opt/vcpkg-cache \
+    -v generalsx-ccache:/ccache \
+    generalsx/linux-dev:latest sleep infinity
 
 # 5. Configure (this is where vcpkg installs the manifest and DXVK/SDL3 are fetched)
-docker compose -f resources/dockerbuild/compose.dev.yml exec builder \
-    bash -lc 'cmake --preset linux64-deploy'
+docker exec generalsx-dev bash -lc 'cmake --preset linux64-deploy'
 
 # 6. Build both games
-docker compose -f resources/dockerbuild/compose.dev.yml exec builder \
-    bash -lc 'cmake --build build/linux64-deploy --target z_generals -j"$(nproc)"'
-docker compose -f resources/dockerbuild/compose.dev.yml exec builder \
-    bash -lc 'cmake --build build/linux64-deploy --target g_generals -j"$(nproc)"'
+docker exec generalsx-dev bash -lc 'cmake --build build/linux64-deploy --target z_generals -j"$(nproc)"'
+docker exec generalsx-dev bash -lc 'cmake --build build/linux64-deploy --target g_generals -j"$(nproc)"'
 
 # 7. Verify the artifacts, the same way build-linux.yml does
-docker compose -f resources/dockerbuild/compose.dev.yml exec builder bash -lc '
+docker exec generalsx-dev bash -lc '
     file build/linux64-deploy/GeneralsMD/GeneralsXZH
     file build/linux64-deploy/Generals/GeneralsX
     ls -lh build/linux64-deploy/GeneralsMD/GeneralsXZH build/linux64-deploy/Generals/GeneralsX'
 
 # 8. Dev-environment checks: compile_commands.json and clang-tidy on one real file
-docker compose -f resources/dockerbuild/compose.dev.yml exec builder bash -lc '
+docker exec generalsx-dev bash -lc '
     test -f build/linux64-deploy/compile_commands.json && echo COMPILE_COMMANDS_OK
     clang-tidy -p build/linux64-deploy --quiet \
         Core/GameEngineDevice/Source/StdDevice/Common/StdBIGFileSystem.cpp | head -20'
 
 # 9. Software Vulkan is present, which is what the headless replay run needs
-docker compose -f resources/dockerbuild/compose.dev.yml exec builder \
-    bash -lc 'ls /usr/share/vulkan/icd.d/ && vulkaninfo --summary | head -20'
+docker exec generalsx-dev bash -lc 'ls /usr/share/vulkan/icd.d/ && vulkaninfo --summary | head -20'
 
-# Tear down
-docker compose -f resources/dockerbuild/compose.dev.yml down
+# Tear down (add `docker volume rm generalsx-vcpkg-cache generalsx-ccache` to drop the caches)
+docker rm -f generalsx-dev
 ```
 
+Two things to know about step 4:
+
+- The container runs as **root**, so files it writes into the bind-mounted checkout - the
+  whole of `build/<preset>` - are root-owned on the host. The repository's own scripts avoid
+  that by passing `--user "$(id -u):$(id -g)" -e HOME=/tmp/generalsx-home`; do the same if
+  that matters, but then also `chown` the two cache paths, because `/opt/vcpkg-cache` and
+  `/ccache` are root-owned in the image and ccache fails the compile it wraps when it cannot
+  write its cache directory.
+- The headless replay environment is **not** baked into the image, on purpose: it would break
+  an interactive `run-linux-zh.sh -win` on a machine that does have a display. Export it per
+  run, exactly as `replay-tests.yml` does:
+
+  ```bash
+  docker exec \
+      -e SDL_VIDEODRIVER=dummy -e SDL_AUDIODRIVER=dummy \
+      -e DXVK_WSI_DRIVER=SDL3 -e DXVK_LOG_LEVEL=none \
+      -e VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json \
+      generalsx-dev bash -lc '<replay command>'
+  ```
+
 Steps 5-6 take a long time from cold: ~500k LOC plus SDL3, SDL3_image, openal-soft and the
-vcpkg manifest. `ccache` and the vcpkg binary-cache volume make the second run much cheaper.
+vcpkg manifest. `ccache` and the vcpkg binary cache make the second run much cheaper.
 
 ### Least confident about
 
@@ -306,8 +377,10 @@ vcpkg manifest. `ccache` and the vcpkg binary-cache volume make the second run m
 4. **`nasm`.** Carried over from `Dockerfile.linux`; `build-linux.yml` does not install it.
    The assumed reason is vcpkg's ffmpeg port needing an assembler. If that assumption is
    wrong it is 5 MB of dead weight, not a failure.
-5. **The `ulimits` block in the compose file** is container hygiene, not something derived
-   from a repository file. It is marked as an assumption there and can be deleted.
+5. **Whether `agent.base_dockerfile` builds this file cleanly.** godmode passes no build
+   arguments, so `VCPKG_PREWARM` takes its default of `1` and the agent base build carries the
+   full prewarm. If that turns out to be too slow for `up`, the fallback is to change the
+   `ARG` default in the Dockerfile - there is no way to override it from `godmode.yaml`.
 6. **Nothing about Flatpak.** `ci.yml`'s Linux path is `build-linux-flatpak.yml`, and
    `flatpak-builder` inside an unprivileged container needs user namespaces and `bwrap`
    privileges this image does not attempt to arrange. Flatpak packaging remains a CI-only
