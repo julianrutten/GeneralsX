@@ -112,10 +112,20 @@ MoltenVK/DXVK-on-macOS.
 
 ## 5. Not done, and why
 
-- **Runtime smoke test (playbook step 11) — NOT RUN.** Headless container, no
-  display, no Vulkan device, and the retail game assets are not in the
-  repository. Neither `GeneralsXZH` nor `GeneralsX` was launched. This is
-  reported as not run rather than approximated.
+- **Runtime smoke test (playbook step 11) — NOT ACHIEVABLE; a partial launch was
+  attempted and is reported for what it is.** Both binaries were run as
+  `./build/linux64-deploy/<product> -headless`. Both start, create the
+  `SDL3GameEngine`, initialise `TheLocalFileSystem`, `TheArchiveFileSystem` and
+  `TheWritableGlobalData`, enter the INI loader, and then exit with status 1 at
+  `[INI] ERROR: No files read from directory 'Data\INI\Default\GameData'` —
+  the retail data files are not in the repository. No crash, no hang, no stack
+  trace, deterministic exit at the missing-asset boundary.
+
+  That is engine startup, **not** the main loop. Playbook step 11 asks that both
+  products enter and exit the main loop; neither ever reaches it, so step 11 is
+  **not satisfied**. `scripts/qa/smoke/docker-smoke-test-zh.sh` needs a Docker
+  daemon and could not be run either. Nothing here should be read as a passing
+  smoke test.
 - **macOS configure/build — NOT RUN.** Linux container.
 - **`scripts/build/linux/docker-*.sh` — NOT RUN.** No Docker daemon inside the
   container. The native `cmake --preset linux64-deploy` path from `/work` was
