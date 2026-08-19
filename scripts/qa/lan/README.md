@@ -22,6 +22,7 @@ build/linux64-deploy/lanprobe enumerate
 | `send <bindIP\|any> <bindPort> <dstIP> <dstPort> <name> [repeats]` | Queues a real `LANMessage` through a real `Transport` and pumps it. Reports whether the out buffer drained. |
 | `listen <bindIP\|any> <bindPort> <seconds> <claimedLocalIP>` | Receives through a real `Transport` and decodes each datagram, showing the source address and whether `LANAPI::update()`'s self-echo test would have dropped it. |
 | `selfecho <port> <broadcastDst> <claimedLocalIP>` | Broadcasts and listens on one socket, i.e. what a real client sees of its own announce. |
+| `discovery <bindPort> <dstPort> <addr/bcast,...> <legacyLocalIP>` | Sends one announce under the pre-fix destination policy and one under the current policy, over real sockets, against a synthetic interface inventory. A `listen` on another port shows which arrived. |
 | `bindtwice <port>` | Whether two lobby sockets can share the port. |
 | `stucksend <port> <dstIP>` | Whether a send the socket layer rejects ever leaves the out buffer. |
 
@@ -99,6 +100,31 @@ Everything here was produced by running the harness, not by reading code.
   address a peer observes — **could not be reproduced end to end here**. The
   address-selection logic is covered by unit tests instead.
 * No macOS, no Flatpak sandbox, no second physical machine, no game UI.
+
+## The discovery failure, reproduced
+
+The container cannot create a second interface, but the interface *inventory*
+can be supplied by hand while the sends stay real. This is a machine whose
+numerically lowest address is a container bridge, which is what the lobby used
+to pick, with the real LAN on the second entry:
+
+```
+$ lanprobe listen any 9032 4 0.0.0.0 &
+$ lanprobe discovery 9031 9032 "172.18.0.1/172.18.255.255,10.192.90.5/10.192.90.255" 172.18.0.1
+legacy policy (m_localIP = 172.18.0.1):
+  sends to 172.18.255.255 only
+fixed policy:
+  sends to 172.18.255.255
+  sends to 10.192.90.255
+out buffer slots still occupied: 0
+
+# what the peer on the real LAN received:
+RECV len=471 from 10.192.90.5:9031 type=2 name='fixed'
+```
+
+The legacy announce never reaches the peer, and nothing anywhere reports a
+problem: `sendto` returns success and the out buffer drains. The fixed policy
+announces on both broadcast domains and arrives.
 
 ## Which assertions encode which bug
 

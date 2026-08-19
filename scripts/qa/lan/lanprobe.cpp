@@ -228,6 +228,74 @@ static int modeStuckSend(UnsignedShort port, UnsignedInt dstIP)
 	return 0;
 }
 
+static UnsignedInt parseIP(const char *s);
+
+// Send one announce under each destination-selection policy and let a listener
+// elsewhere report which of them actually arrived. The interface list is given
+// on the command line as "addr/broadcast,addr/broadcast,..." so the multi-homed
+// case can be exercised on a host that only has one real interface: the sends
+// are real, only the interface inventory is synthetic.
+static int modeDiscovery(UnsignedShort bindPort, UnsignedShort dstPort,
+                         const char *ifaceSpec, UnsignedInt legacyLocalIP)
+{
+	LANLocalInterface ifaces[MAX_LAN_LOCAL_INTERFACES];
+	Int ifaceCount = 0;
+	{
+		char spec[512];
+		strncpy(spec, ifaceSpec, sizeof(spec) - 1);
+		spec[sizeof(spec) - 1] = 0;
+		for (char *tok = strtok(spec, ","); tok && ifaceCount < MAX_LAN_LOCAL_INTERFACES; tok = strtok(nullptr, ",")) {
+			char *slash = strchr(tok, '/');
+			if (!slash) continue;
+			*slash = 0;
+			ifaces[ifaceCount].address = parseIP(tok);
+			ifaces[ifaceCount].broadcast = parseIP(slash + 1);
+			ifaces[ifaceCount].canBroadcast = TRUE;
+			++ifaceCount;
+		}
+	}
+
+	Transport t;
+	if (!t.init(0 /*INADDR_ANY*/, bindPort)) { printf("BIND FAILED\n"); return 1; }
+	t.allowBroadcasts(true);
+
+	// The policy this code used before issue #86: take the subnet broadcast of
+	// the one interface whose address equals m_localIP and, having found one,
+	// skip the limited broadcast entirely.
+	printf("legacy policy (m_localIP = %d.%d.%d.%d):\n", PRINTF_IP_AS_4_INTS(legacyLocalIP));
+	{
+		UnsignedInt dst = 0;
+		for (Int i = 0; i < ifaceCount; ++i)
+			if (ifaces[i].address == legacyLocalIP) { dst = ifaces[i].broadcast; break; }
+		if (dst == 0) dst = INADDR_BROADCAST;
+		char d[32]; fmtIP(dst, d);
+		printf("  sends to %s only\n", d);
+		LANMessage msg;
+		fillMessage(&msg, LANMessage::MSG_LOBBY_ANNOUNCE, L"legacy");
+		t.queueSend(dst, dstPort, (unsigned char *)&msg, sizeof(LANMessage));
+		t.update();
+	}
+
+	printf("fixed policy:\n");
+	{
+		UnsignedInt dsts[MAX_LAN_LOCAL_INTERFACES + 1];
+		Int n = LANSelectBroadcastDestinations(ifaces, ifaceCount, dsts, ARRAY_SIZE(dsts));
+		LANMessage msg;
+		fillMessage(&msg, LANMessage::MSG_LOBBY_ANNOUNCE, L"fixed");
+		for (Int i = 0; i < n; ++i) {
+			char d[32]; fmtIP(dsts[i], d);
+			printf("  sends to %s\n", d);
+			t.queueSend(dsts[i], dstPort, (unsigned char *)&msg, sizeof(LANMessage));
+		}
+		t.update();
+	}
+
+	int occupied = 0;
+	for (size_t k = 0; k < ARRAY_SIZE(t.m_outBuffer); ++k) if (t.m_outBuffer[k].length > 0) ++occupied;
+	printf("out buffer slots still occupied: %d\n", occupied);
+	return 0;
+}
+
 static UnsignedInt parseIP(const char *s)
 {
 	unsigned a, b, c, d;
@@ -450,6 +518,7 @@ int main(int argc, char **argv)
 			"  lanprobe send   <bindIP|any> <bindPort> <dstIP> <dstPort> <name> [repeats]\n"
 			"  lanprobe listen <bindIP|any> <bindPort> <seconds> <claimedLocalIP>\n"
 			"  lanprobe selfecho  <port> <broadcastDst> <claimedLocalIP>\n"
+			"  lanprobe discovery <bindPort> <dstPort> <addr/bcast,...> <legacyLocalIP>\n"
 			"  lanprobe bindtwice <port>\n"
 			"  lanprobe stucksend <port> <dstIP>\n");
 		return 2;
@@ -469,6 +538,8 @@ int main(int argc, char **argv)
 	}
 	if (!strcmp(argv[1], "selfecho") && argc >= 5)
 		return modeSelfEcho((UnsignedShort)atoi(argv[2]), parseIP(argv[3]), parseIP(argv[4]));
+	if (!strcmp(argv[1], "discovery") && argc >= 6)
+		return modeDiscovery((UnsignedShort)atoi(argv[2]), (UnsignedShort)atoi(argv[3]), argv[4], parseIP(argv[5]));
 	if (!strcmp(argv[1], "bindtwice") && argc >= 3)
 		return modeBindTwice((UnsignedShort)atoi(argv[2]));
 	if (!strcmp(argv[1], "stucksend") && argc >= 4)
