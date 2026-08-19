@@ -1,7 +1,8 @@
 # Linux Dev Container (`Dockerfile.dev`)
 
 Findings from an audit of the Linux build, and the container tooling that came out of it:
-`resources/dockerbuild/Dockerfile.dev` and the repository-root `godmode.yaml`.
+`resources/dockerbuild/Dockerfile.dev`, committed here, and `godmode.yaml`, which lives in the
+private `devmastersbv/godmode-env` overlay rather than this repository.
 
 There is no Compose file. This repository runs no services - it is a desktop game, with no
 server, no database and nothing to keep up - and the image is named to godmode directly, by
@@ -214,7 +215,11 @@ for the replay harness; `vulkan-tools` for the "DXVK needs Vulkan" pitfall in `A
 
 ## 4. godmode wiring
 
-`godmode.yaml` at the repository root is the whole of it:
+`godmode.yaml` is the whole of it, but it does not live in this repository: the authoritative
+copy is `julianrutten/GeneralsX/godmode.yaml` in the private `devmastersbv/godmode-env`
+overlay, which godmode reads and which takes precedence over anything committed here. What
+follows is a copy of its contents, kept here for reference; edit the overlay, not this
+repository, if it needs to change:
 
 ```yaml
 version: 1
