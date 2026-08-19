@@ -117,9 +117,11 @@ pushed in with `LANAPI::SetLocalIP()`:
   but it reads `OptionPreferences::getOnlineIPAddress()` — the *GameSpy/online*
   preference, not the LAN one.
 
-`IPEnumeration::addNewIP` keeps the list sorted **ascending by numeric IP**, so
-`IPlist->getIP()` is the *numerically lowest* candidate address, not the one the
-routing table would pick. On POSIX the candidate set is every `AF_INET` address
+`IPEnumeration::addNewIP` keeps the list sorted **ascending by numeric IP**. The
+menus used to take the head of that list, i.e. the *numerically lowest*
+candidate; they now call `SelectLANLocalAddress()`, which honours a configured
+address while it is still enumerated, otherwise prefers the address the default
+route uses, otherwise falls back to the head of the list. On POSIX the candidate set is every `AF_INET` address
 that is `IFF_UP`, not `IFF_LOOPBACK`, is `IFF_BROADCAST`, is not
 `IFF_POINTOPOINT`, and whose interface name does not start with `docker`,
 `veth`, `virbr`, `awdl`, `llw` or `utun`.
@@ -133,19 +135,23 @@ are `IFF_UP`, non-loopback and `IFF_BROADCAST`, and all of them typically carry
 `m_localIP` is then used for three different jobs, and it is not obviously the
 right value for all three:
 
-1. **Choosing where broadcasts go.** `LANAPI::sendMessage` (POSIX) calls
-   `GatherSubnetBroadcastAddrs(m_localIP, …)`, which only returns the subnet
-   broadcast address of the interface whose address *equals* `m_localIP`. If it
-   returns at least one address, the global `255.255.255.255` fallback is
-   **skipped**. So discovery traffic goes out on exactly the subnet of
-   `m_localIP` and nowhere else.
-2. **Deciding "is this packet mine?".** `LANAPI::update()` drops any datagram
-   whose source address equals `m_localIP` as a self-echo. Broadcasts *do* loop
-   back to the sending host on Linux **[verified]**, so this check is load
-   bearing.
+1. **Choosing where broadcasts go.** This *used* to depend on `m_localIP`:
+   `LANAPI::sendMessage` called `GatherSubnetBroadcastAddrs(m_localIP, …)`,
+   which returned only the subnet broadcast of the interface whose address
+   equalled `m_localIP`, and skipped the `255.255.255.255` fallback whenever it
+   found one. It no longer does — `LANSelectBroadcastDestinations()` announces
+   on every broadcast domain the machine is attached to.
+2. **Deciding "is this packet mine?".** `LANAPI::update()` drops a datagram from
+   this machine as a self-echo. Broadcasts *do* loop back to the sending host on
+   Linux **[verified]**, so this check is load bearing. It now compares against
+   every local address rather than only `m_localIP`.
 3. **Identity in the protocol.** `m_localIP` is written into the host's slot 0,
-   into the generated game name (`"%8.8X%8.8X"` of `m_localIP` and the seed), and
-   is compared against the `playerIP`/`gameIP` fields of incoming messages.
+   into the generated game name (`"%8.8X%8.8X"` of `m_localIP` and the seed), is
+   compared against the `playerIP`/`gameIP` fields of incoming messages, and is
+   what `LANGameSlot::isLocalPlayer()` — and hence `getLocalSlotNum()` — uses to
+   find our own slot in the host's slot list. It is also the address every other
+   client will connect to on port 8088 for the actual game session, so a bad
+   choice survives the lobby and breaks the match instead.
 
 ## 5. Sequence: lobby discovery
 
@@ -244,14 +250,17 @@ fallback.
   `m_localIP`. (Deliberate, from PR #201 — a socket bound to a unicast address
   does not receive broadcasts on Linux.)
 * `LANAPI::sendMessage()` upstream is `if (ip) … else if (directConnect) … else
-  broadcast`. Here the first branch lost its `else`, so a unicast message is
-  *also* broadcast to the whole subnet. Every join accept/deny, every
-  direct-connect game announce and every targeted game-options update currently
-  goes out twice, once addressed and once to everybody.
+  broadcast`. The first branch had lost its `else`, so a unicast message was
+  *also* broadcast to the whole subnet: every join accept/deny, every
+  direct-connect game announce and every targeted game-options update went out
+  twice. Restored.
 * POSIX `IPEnumeration` uses `getifaddrs()` with the filters described in §4;
   upstream uses `gethostbyname(gethostname())`.
-* `GatherSubnetBroadcastAddrs()` and the subnet-directed broadcast path are
-  GeneralsX-only.
+* The subnet-directed broadcast path is GeneralsX-only.
+* `NetworkDirectConnectInit()` reads `OptionPreferences::getOnlineIPAddress()`
+  where the LAN lobby reads `getLANIPAddress()`. That is retail behaviour, not a
+  GeneralsX change, but it does mean the two screens can pick different local
+  addresses on the same machine. Left alone; worth revisiting.
 
 ## 8. What a failure looks like from the outside
 
@@ -265,3 +274,50 @@ Because every mismatch above is a silent `return`, the symptoms are:
 commented-out `[LAN86]` `fprintf(stderr, …)` traces from the previous
 investigation. Uncommenting them is the fastest way to see which `return` a
 given packet died on.
+
+## 9. Status after the 19/08/2026 work
+
+Fixed, with the evidence in `scripts/qa/lan/README.md`:
+
+* Discovery announces on every broadcast domain rather than one guessed
+  interface, and never queues a zero destination.
+* The self-echo test uses every local address.
+* A join request now carries the address the routing table says reaches that
+  host, and a join accept/deny is accepted if it names any address of this
+  machine while a join is pending; the address the host observed is adopted, and
+  the cached local address on every `LANGameInfo` moves with it.
+* The host accepts a join request naming any of its own addresses.
+* The menus choose the local address by reachability rather than numeric order,
+  and no longer dereference an empty enumeration list.
+* `CopyWcharToWindowsWideChar()` no longer reads past the end of the source
+  string (an AddressSanitizer heap-buffer-overflow read that also put adjacent
+  heap into every packet), `GetWindowsWideCharAsWchar()` bounds its scan and
+  never returns null, and `LANMessage` is zero-initialised instead of sending
+  several hundred bytes of uninitialised stack.
+* `Transport::doSend()` no longer wedges an out-buffer slot on a destination the
+  socket layer rejects outright.
+
+Still unknown, and not claimed:
+
+* Whether a real match between two machines now works. Nobody ran one.
+* macOS. Nothing here was compiled or run on macOS. The POSIX paths are shared
+  with Linux, and `getifaddrs`, `IFF_BROADCAST` and `connect`/`getsockname` on a
+  datagram socket all behave the same way there, but that is reasoning, not
+  evidence.
+* Flatpak's network sandbox. `--share=network` in
+  `flatpak/com.fbraz3.GeneralsX*.yml` should give the app the host network
+  namespace, so broadcast ought to work unchanged. Untested.
+* The in-game lobby UI. Nothing here was observed through the game.
+* Whether the reported lobby failure between two *single-interface* Linux
+  machines is explained. It is not, by any of the above: on a machine with one
+  usable address the old code picked it correctly. The one thing that does
+  explain it is the pre-#201 bind to a unicast address, which receives no
+  broadcasts at all (**[verified]**, observation 2 in the harness README) — if
+  the reporters were on a Flatpak built before 2026-07-12 that is a complete
+  explanation, and it is already fixed. If they were not, the fault is still
+  open and the `[LAN86]` traces are the way in.
+* Whether `ParseGameOptionsString()` failing on an unresolvable map is dropping
+  games from lobby lists in the field. The code path is real
+  (`LANAPI::handleGameAnnounce` deletes the game when the options string does
+  not parse, and `ParseAsciiStringToGameInfo` rejects a map it cannot resolve),
+  but nothing here shows it happening.
