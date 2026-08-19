@@ -3,8 +3,10 @@
 # baked vcpkg, clang-tidy + replay-test tooling) usable both as a build image and as the
 # godmode agent base image.
 #
-# Built by : godmode, from `agent.base_dockerfile` in the repository-root godmode.yaml, with
-#            the worktree as the build context and no build arguments; or by hand with
+# Built by : godmode, from `agent.base_dockerfile` in this repository's godmode.yaml - which
+#            lives in the private godmode-env overlay rather than here, since upstream has no
+#            use for our tooling configuration - with the worktree as the build context and
+#            no build arguments; or by hand with
 #            `docker build --platform linux/amd64 -f resources/dockerbuild/Dockerfile.dev \
 #             -t generalsx/linux-dev:latest .` from the repository root. The root
 #            .dockerignore keeps that context to the three dependency manifests COPYed below.
