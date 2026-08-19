@@ -1,0 +1,46 @@
+# godmode environment definition for GeneralsX
+# GeneralsX @build Claude 19/08/2026 Give dispatched agents a real C++ toolchain.
+#
+# This repository declares no services and renders no Compose project: it is a desktop game,
+# so there is no server, no database and nothing to keep up. godmode registers it as a
+# *workspace* repository and validates this file against a stricter schema that refuses, by
+# name, every section such a repository could not act on - `slug`, `compose.files`, `routes`,
+# `scope`, `shared`, `database`, `templates`, `bootstrap`, `health`, `inject`, `tenancy`,
+# `verify`, `uses`, `logins` and `agent.base_service`. Any one of them fails `up` for the
+# whole repository, so keep this file to exactly what is below.
+#
+# Without the `agent:` block an agent gets godmode's default base image, which has no gcc,
+# g++, clang, clang-tidy, cmake, ninja, pkg-config or nasm, no vcpkg (VCPKG_ROOT unset,
+# /opt/vcpkg absent) and, of the game's own libraries, only freetype and fontconfig. An agent
+# could read and edit this repository but could not compile a line of it.
+
+version: 1
+name: generalsx
+
+agent:
+  # godmode builds this Dockerfile with the worktree as the build context, tags the result as
+  # this repository's agent base image and layers its own agent tooling (node, claude, codex,
+  # opencode, tmux, playwright) on top. There are no build arguments and no separate build
+  # context - `base_args:` and `base_context:` do not exist - so the image has to be buildable
+  # as-is from the repository root. The root .dockerignore keeps that context down to the
+  # three dependency manifests the Dockerfile actually COPYs.
+  #
+  # The contract the base image must honour, and how Dockerfile.dev honours it:
+  #
+  #   - glibc Debian/Ubuntu: the layering step checks for `apt-get` and for
+  #     `getconf GNU_LIBC_VERSION` and fails the whole `up` naming this repository if either
+  #     is missing. The image is FROM ubuntu:24.04. Never move it to Alpine or musl.
+  #   - no reliance on its own ENTRYPOINT or USER: godmode resets both. The Dockerfile sets
+  #     neither; it only sets CMD, and it runs as root.
+  #   - tooling reachable without a login shell: an `ENV PATH` in a Dockerfile does not
+  #     survive Debian's /etc/profile, so cmake/ctest/cpack/vcpkg are symlinked into
+  #     /usr/local/bin as well as living under /opt.
+  base_dockerfile: resources/dockerbuild/Dockerfile.dev
+
+  # Load-bearing, not cosmetic. Every scripts/build/linux/docker-*.sh runs the build with
+  # `-v "$PWD:/work" -w /work`, and each of them discards build/<preset> when that directory's
+  # CMakeCache.txt was not generated with CMAKE_HOME_DIRECTORY == /work
+  # (docker-configure-linux.sh:74, docker-build-linux-zh.sh:80, docker-build-linux-generals.sh:80).
+  # Mount the checkout anywhere else and an agent's configure output is thrown away by the next
+  # script run, and the script's output by the next agent. Dockerfile.dev's WORKDIR matches.
+  workdir: /work

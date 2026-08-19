@@ -1,0 +1,360 @@
+# GeneralsX Linux development / agent container
+# GeneralsX @build Claude 19/08/2026 Consolidated Linux dev image (CI-derived package set,
+# baked vcpkg, clang-tidy + replay-test tooling) usable both as a build image and as the
+# godmode agent base image.
+#
+# Built by : godmode, from `agent.base_dockerfile` in the repository-root godmode.yaml, with
+#            the worktree as the build context and no build arguments; or by hand with
+#            `docker build --platform linux/amd64 -f resources/dockerbuild/Dockerfile.dev \
+#             -t generalsx/linux-dev:latest .` from the repository root. The root
+#            .dockerignore keeps that context to the three dependency manifests COPYed below.
+#
+# Purpose : native Linux builds of BOTH game targets
+#             - GeneralsMD (Zero Hour) -> target z_generals -> build/<preset>/GeneralsMD/GeneralsXZH
+#             - Generals   (base game) -> target g_generals -> build/<preset>/Generals/GeneralsX
+# Preset  : linux64-deploy (see CMakePresets.json - Ninja, RelWithDebInfo, SDL3 + DXVK + OpenAL)
+# Scope   : native x86_64 Linux only. MinGW/Windows cross-compilation is deliberately NOT
+#           included here; resources/dockerbuild/Dockerfile.mingw already covers that and
+#           pulls in a second toolchain plus wine64 for no benefit to the Linux target.
+#
+# Every apt package below is traceable to a specific file in this repository. The provenance
+# marker on each block is the file that justifies it:
+#   [CI]      .github/workflows/build-linux.yml  -> "Install Dependencies" step (the only
+#             place a full Linux build is known to have succeeded; authoritative)
+#   [REPLAY]  .github/workflows/replay-tests.yml -> headless replay harness
+#   [IMAGE]   resources/dockerbuild/Dockerfile.linux -> the existing builder image
+#   [DOCS]    AGENTS.md / .github/instructions/platform-linux.instructions.md
+#   [CMAKE]   a find_package/pkg_check_modules/FetchContent call in cmake/ or */CMakeLists.txt
+# Anything I could not trace is marked ASSUMPTION.
+
+# ---------------------------------------------------------------------------
+# Base image
+# ---------------------------------------------------------------------------
+# Pinned to the Ubuntu LTS series that GitHub's `ubuntu-latest` resolves to, because
+# build-linux.yml is the only environment in which this project is known to build end to end,
+# and its apt package names (notably the libgles2-mesa-dev / libegl1-mesa-dev transitional
+# packages) are only guaranteed to resolve on that series.
+#
+# This deliberately differs from resources/dockerbuild/Dockerfile.linux, which pins
+# `ubuntu:26.04` - a series newer than CI, and exactly the sort of jump where mesa
+# transitional -dev packages get dropped.
+#
+# Constraint for godmode: this must stay a glibc Debian/Ubuntu image. The agent-tooling
+# layering step checks for `apt-get` and `getconf GNU_LIBC_VERSION` and fails the whole
+# `up` otherwise. Do not "optimise" this to Alpine.
+#
+# A digest pin (ubuntu:24.04@sha256:...) would be stronger still; resolving one needs a
+# machine with Docker, which the author of this file did not have.
+#
+# A Dockerfile cannot pin its own platform. AGENTS.md golden rule 5 is "64-bit native -
+# x86_64 only" and every scripts/build/linux/docker-*.sh passes --platform linux/amd64, so a
+# hand build on an Apple Silicon host must pass it too or it produces an arm64 image the
+# presets do not target.
+FROM ubuntu:24.04
+
+LABEL maintainer="GeneralsX Project"
+LABEL description="Linux native dev/build environment for GeneralsX and GeneralsXZH (GCC/Clang + CMake + Ninja + vcpkg)"
+LABEL version="1.0-linux64-deploy"
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# ---------------------------------------------------------------------------
+# Layer 1: system packages
+# ---------------------------------------------------------------------------
+# This is the expensive, slow-changing layer and it is placed first on purpose. No project
+# source is ever COPYed into this image (the checkout is bind-mounted at /work), so an
+# ordinary source change cannot invalidate this layer or anything below it.
+RUN apt-get update -qq && \
+    apt-get install -y -qq --no-install-recommends \
+        \
+        # --- [CI] core toolchain -------------------------------------------------
+        build-essential \
+        ninja-build \
+        git \
+        curl \
+        ca-certificates \
+        zip \
+        unzip \
+        tar \
+        pkg-config \
+        python3 \
+        python3-pip \
+        python3-dev \
+        \
+        # --- [CI] autotools; vcpkg ports (fontconfig, ffmpeg deps) build with them ---
+        autoconf \
+        automake \
+        autoconf-archive \
+        libtool \
+        libltdl-dev \
+        \
+        # --- [CI] audio ----------------------------------------------------------
+        # libopenal-dev satisfies find_package(OpenAL) in cmake/openal.cmake; the other
+        # four are backend headers that openal-soft and SDL3 probe for when built from
+        # source via FetchContent.
+        libopenal-dev \
+        libasound2-dev \
+        libpulse-dev \
+        libaudio-dev \
+        libjack-dev \
+        libsndio-dev \
+        \
+        # --- [CI] FFmpeg -----------------------------------------------------------
+        # [CMAKE] Core/GameEngineDevice/CMakeLists.txt:305 and the Generals twin do
+        #   pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET libavcodec libavformat
+        #                     libavutil libswscale)
+        # so these must be present as system pkg-config modules even though vcpkg.json
+        # also lists "ffmpeg".
+        libavcodec-dev \
+        libavformat-dev \
+        libavutil-dev \
+        libswresample-dev \
+        libswscale-dev \
+        \
+        # --- [CI] misc libs --------------------------------------------------------
+        # [CMAKE] cmake/sdl3.cmake forces SDL3_image to link the *system shared* libpng
+        #   (find_library(PNG_LIBRARY ... NO_CMAKE_PATH)) because vcpkg only ships a
+        #   static libpng16.a, so libpng-dev is not optional.
+        libpng-dev \
+        zlib1g-dev \
+        libfribidi-dev \
+        libthai-dev \
+        \
+        # --- [CI] SDL3 build dependencies -------------------------------------------
+        # [CMAKE] cmake/sdl3.cmake compiles SDL3 3.4.2 + SDL3_image 3.4.0 from source via
+        # FetchContent (SDL_WAYLAND=ON, SDL_X11=ON), so SDL's own build deps must be here.
+        # There is no libsdl3-dev involved; docs/BUILD/LINUX.md's `apt install libsdl3-dev`
+        # line is stale.
+        libx11-dev \
+        libxext-dev \
+        libxrandr-dev \
+        libxcursor-dev \
+        libxfixes-dev \
+        libxi-dev \
+        libxss-dev \
+        libxtst-dev \
+        libxkbcommon-dev \
+        libdrm-dev \
+        libgbm-dev \
+        libgl1-mesa-dev \
+        libgles2-mesa-dev \
+        libegl1-mesa-dev \
+        libdbus-1-dev \
+        libibus-1.0-dev \
+        libudev-dev \
+        libpipewire-0.3-dev \
+        libwayland-dev \
+        libdecor-0-dev \
+        liburing-dev \
+        \
+        # --- [CI] Vulkan headers/loader for DXVK ------------------------------------
+        # cmake/dx8.cmake fetches the prebuilt dxvk-native-2.6-steamrt-sniper tarball on
+        # Linux, so DXVK itself is not compiled here - but the game links and dlopens
+        # against the Vulkan loader.
+        # NOTE: Dockerfile.linux is missing libvulkan-dev; build-linux.yml has it.
+        libvulkan-dev \
+        \
+        # --- [REPLAY] headless replay/smoke test runtime ------------------------------
+        # replay-tests.yml installs exactly these for the Linux job and then forces
+        # lavapipe via VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json,
+        # i.e. a software Vulkan renderer with no GPU present - the same situation a
+        # container is in.
+        libvulkan1 \
+        mesa-vulkan-drivers \
+        p7zip-full \
+        git-lfs \
+        \
+        # --- [DOCS] AGENTS.md "DXVK needs Vulkan" pitfall -----------------------------
+        # vulkaninfo is the first thing to run when DXVK refuses to initialise.
+        vulkan-tools \
+        \
+        # --- [DOCS] AGENTS.md / platform-linux.instructions.md debugging --------------
+        # Both document a `gdb -batch -ex "run -win" -ex "bt full" ...` recipe.
+        gdb \
+        \
+        # --- static analysis ------------------------------------------------------------
+        # [CMAKE/DOCS] .clang-tidy at the repo root and scripts/tooling/clang-tidy/run.py,
+        # which shells out to `clang-tidy` and consumes the compile_commands.json that
+        # every preset exports (CMAKE_EXPORT_COMPILE_COMMANDS=ON in CMakePresets.json).
+        # clang also gives the second of the two compilers linux64-deploy supports
+        # ("GCC/Clang x86_64" - .github/instructions/build.instructions.md).
+        clang \
+        clang-tidy \
+        \
+        # --- [CMAKE] cmake/ccache.cmake ---------------------------------------------------
+        # SAGE_USE_CCACHE defaults to ON and the module does find_program(CCACHE_PROGRAM
+        # ccache), wiring it up as CMAKE_<LANG>_COMPILER_LAUNCHER when present.
+        ccache \
+        \
+        # --- [IMAGE] Dockerfile.linux ships nasm -------------------------------------------
+        # build-linux.yml does not install it. Kept because vcpkg's ffmpeg port builds
+        # assembly and the existing builder image carries it; ~5 MB is cheap insurance.
+        nasm \
+        \
+        # --- [CI] build-linux.yml "Verify Build Artifacts" runs `file "$BINARY"` ------------
+        file \
+    && rm -rf /var/lib/apt/lists/*
+
+# ---------------------------------------------------------------------------
+# Layer 2: CMake (pinned)
+# ---------------------------------------------------------------------------
+# The real minimum is 3.25, from two places that must both be satisfied:
+#   - CMakeLists.txt:1        cmake_minimum_required(VERSION 3.25)
+#   - CMakePresets.json       "version": 6, "cmakeMinimumRequired": 3.25.0
+# (docs/BUILD/LINUX.md still says "CMake 3.20 or higher" - that is stale.)
+#
+# 3.31.6 is not an arbitrary choice: it is the version resources/dockerbuild/Dockerfile
+# already pins via ARG CMAKE_VERSION. Installing it from Kitware rather than apt makes the
+# CMake version independent of base-image drift, which is the failure mode the existing
+# Dockerfile.mingw was working around when it hand-installed 3.25.0 on Ubuntu 22.04.
+ARG CMAKE_VERSION=3.31.6
+# Downloaded to a file rather than piped straight into tar: /bin/sh here is dash, which has
+# no `pipefail`, so a curl failure in a pipeline would be reported only by whatever tar made
+# of the truncated stream. Commit d5ef6594e turned pipefail on in CI for the same reason.
+# A SHA-256 pin on this download would be better still and is a good follow-up.
+RUN mkdir -p /opt/cmake && \
+    curl -fsSL -o /tmp/cmake.tar.gz \
+      "https://github.com/Kitware/CMake/releases/download/v${CMAKE_VERSION}/cmake-${CMAKE_VERSION}-linux-x86_64.tar.gz" && \
+    tar -xzf /tmp/cmake.tar.gz -C /opt/cmake --strip-components=1 && \
+    rm -f /tmp/cmake.tar.gz && \
+    # Symlink into /usr/local/bin rather than relying on ENV PATH alone: a Dockerfile ENV
+    # PATH does not survive Debian's /etc/profile, and godmode's agent layering has already
+    # been bitten by a toolchain that was installed, present and invisible.
+    ln -sf /opt/cmake/bin/cmake  /usr/local/bin/cmake && \
+    ln -sf /opt/cmake/bin/ctest  /usr/local/bin/ctest && \
+    ln -sf /opt/cmake/bin/cpack  /usr/local/bin/cpack && \
+    cmake --version
+
+# ---------------------------------------------------------------------------
+# Layer 3: vcpkg (baked, pinned)
+# ---------------------------------------------------------------------------
+# DECISION: vcpkg is baked into the image, not mounted from the host.
+#
+# The existing resources/dockerbuild/Dockerfile.linux does the opposite - it ships no vcpkg
+# and the build scripts bind-mount ~/.generalsx/vcpkg from the developer's home directory
+# into /opt/vcpkg. Trade-off, stated plainly:
+#
+#   Mounted (status quo)  + image stays ~90 MB
+#                         + one vcpkg shared by every image, updated with a git pull
+#                         - the container is useless on any machine that has not run the
+#                           host-side init first. There is no ~/.generalsx/vcpkg on a
+#                           godmode host, and no docker-vcpkg-init.sh in this repo either
+#                           (DOCKER_WORKFLOW.md and resources/dockerbuild/README.md both
+#                           tell you to run scripts/docker-vcpkg-init.sh; that file does
+#                           not exist). An agent would land in a container that cannot
+#                           configure CMake, which is precisely the bug being fixed.
+#                         - the mounted clone is unpinned: the build scripts do a plain
+#                           `git clone https://github.com/microsoft/vcpkg.git` with no
+#                           checkout, so a developer's toolchain silently drifts away
+#                           from CI's.
+#
+#   Baked (this file)     + `cmake --preset linux64-deploy` works on first run, anywhere,
+#                           with no host-side setup step
+#                         + the vcpkg commit is pinned to the exact one CI uses, so a
+#                           local failure is reproducible in CI and vice versa
+#                         - adds roughly 600-800 MB to the image (full clone + bootstrap)
+#                         - updating vcpkg means rebuilding the image
+#
+# For an agent container, "works with zero host-side setup" wins; the size cost is paid once
+# per host. Baking also removes the need for a cache volume: the prewarmed binary cache in
+# layer 4 is an image layer, so every container started from this image already has it. What
+# no longer survives - since there is no Compose file and therefore no named volume - are
+# ports compiled *after* the container starts, i.e. after a vcpkg.json bump. Those are
+# rebuilt in each new container until the image itself is rebuilt, which re-runs the prewarm
+# because the manifest COPY invalidates that layer. Rebuilding the image is the intended fix;
+# a hand run can also mount a volume at /opt/vcpkg-cache to keep them.
+#
+# The commit is the one build-linux.yml checks out in its "Bootstrap vcpkg" step. It must be
+# a FULL clone (not --depth 1): manifest mode has to resolve the registry baseline
+# 533a5fda5c0646d1771345fb572e759283444d5f declared in vcpkg.json, which is a different
+# commit from the tool checkout below.
+ARG VCPKG_COMMIT=ffc071e0c08432c60c9b64f00334c0227667931b
+ENV VCPKG_ROOT=/opt/vcpkg
+ENV VCPKG_DEFAULT_BINARY_CACHE=/opt/vcpkg-cache
+ENV VCPKG_DISABLE_METRICS=1
+RUN git clone https://github.com/microsoft/vcpkg.git "${VCPKG_ROOT}" && \
+    git -C "${VCPKG_ROOT}" checkout "${VCPKG_COMMIT}" && \
+    "${VCPKG_ROOT}/bootstrap-vcpkg.sh" -disableMetrics && \
+    ln -sf "${VCPKG_ROOT}/vcpkg" /usr/local/bin/vcpkg && \
+    mkdir -p "${VCPKG_DEFAULT_BINARY_CACHE}" && \
+    vcpkg version
+
+# ---------------------------------------------------------------------------
+# Layer 4: vcpkg binary-cache prewarm
+# ---------------------------------------------------------------------------
+# Only the dependency manifests are copied in - never game source - so this layer is
+# invalidated by a change to vcpkg.json / vcpkg-lock.json / triplets and by nothing else.
+# That is the whole point: editing a .cpp must not cost a dependency rebuild.
+#
+# CMakePresets.json's default-vcpkg sets CMAKE_TOOLCHAIN_FILE to
+# $env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake, so the real install happens at configure
+# time into build/<preset>/vcpkg_installed. What we can usefully pre-build here is the shared
+# binary cache; configure then unpacks instead of compiling ffmpeg, curl, freetype,
+# fontconfig, openal-soft, zlib, glm, gli and stb from scratch.
+#
+# Set --build-arg VCPKG_PREWARM=0 for a fast image build at the cost of a slow first configure.
+ARG VCPKG_PREWARM=1
+COPY vcpkg.json vcpkg-lock.json /opt/vcpkg-manifest/
+COPY triplets /opt/vcpkg-manifest/triplets
+RUN if [ "${VCPKG_PREWARM}" = "1" ]; then \
+        echo "Prewarming vcpkg binary cache (x64-linux) - this is the slow part of the image build..." && \
+        { vcpkg install \
+            --x-manifest-root=/opt/vcpkg-manifest \
+            --x-install-root=/opt/vcpkg-manifest/vcpkg_installed \
+            --overlay-triplets=/opt/vcpkg-manifest/triplets \
+            --triplet=x64-linux \
+            --clean-after-build \
+          && echo "vcpkg prewarm OK"; } \
+        || { \
+            # A cold cache is a slow first build, not a broken image - so do not fail the
+            # whole build here. Leave a marker so the failure is discoverable instead of
+            # silent; see docs/WORKDIR/support/DEV_CONTAINER.md.
+            echo "WARNING: vcpkg prewarm FAILED - first cmake --preset will build ports from source"; \
+            date > "${VCPKG_DEFAULT_BINARY_CACHE}/PREWARM_FAILED"; \
+        } ; \
+        rm -rf /opt/vcpkg-manifest/vcpkg_installed "${VCPKG_ROOT}/buildtrees" "${VCPKG_ROOT}/downloads" ; \
+    else \
+        echo "VCPKG_PREWARM=0 - skipping binary cache prewarm"; \
+    fi
+
+# ---------------------------------------------------------------------------
+# Environment
+# ---------------------------------------------------------------------------
+# [CMAKE] cmake/ccache.cmake picks ccache up automatically (SAGE_USE_CCACHE defaults ON).
+#
+# /ccache is a plain directory in the image now that there is no Compose file to back it with
+# a named volume. Consequence, stated rather than papered over: the compiler cache is
+# container-local. It still pays for itself inside one container - godmode keeps an agent
+# container up across a session, so rebuilds and branch switches hit it - but a recreated
+# container starts cold and recompiles ~500k LOC. It is deliberately NOT moved under /work:
+# that path is a bind mount whose writability depends on the caller (the build scripts run
+# with `--user "$(id -u):$(id -g)"`), and ccache aborts the compile it is wrapping when its
+# cache directory cannot be created. Anyone who wants persistence mounts it explicitly:
+# `docker run -v generalsx-ccache:/ccache ...`, or overrides CCACHE_DIR per run.
+ENV CCACHE_DIR=/ccache
+RUN mkdir -p /ccache
+
+# [CI] build-linux.yml sets APPIMAGE_EXTRACT_AND_RUN=1 for the AppImage packaging step so
+# appimagetool runs without FUSE - which a container will not have.
+ENV APPIMAGE_EXTRACT_AND_RUN=1
+
+# The headless replay environment (SDL_VIDEODRIVER=dummy, SDL_AUDIODRIVER=dummy,
+# DXVK_WSI_DRIVER=SDL3, DXVK_LOG_LEVEL=none, VK_ICD_FILENAMES=<lavapipe>) is deliberately
+# NOT baked in as ENV. replay-tests.yml exports it per run, and hardcoding it in the image
+# would silently break an interactive `run-linux-zh.sh -win` for anyone who does have a
+# display or a real GPU. With the Compose file gone there is nothing setting it per container
+# either, so a headless replay run has to export it itself; the exact block is in
+# docs/WORKDIR/support/DEV_CONTAINER.md, copied from replay-tests.yml.
+
+# /work matches every existing script: scripts/build/linux/docker-*.sh all run
+# `-v "$PWD:/work" -w /work`, and the CMake-cache guard in those scripts explicitly checks
+# for CMAKE_HOME_DIRECTORY == /work. Keeping it means container paths in build output match
+# agent paths.
+WORKDIR /work
+
+# No ENTRYPOINT and no USER on purpose:
+#   - godmode resets both when it layers its agent tooling on top of this image, so anything
+#     that depended on them would silently stop happening;
+#   - the repo's own build scripts already run this image with an explicit
+#     `--user "$(id -u):$(id -g)"` and their own bash -c command.
+CMD ["/bin/bash"]
