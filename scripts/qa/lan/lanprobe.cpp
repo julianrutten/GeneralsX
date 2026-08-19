@@ -78,10 +78,15 @@ static int modeEnumerate()
 	int n = 0;
 	for (EnumeratedIP *p = list; p != nullptr; p = p->getNext()) {
 		printf("  [%d] %-16s 0x%08X%s\n", n, p->getIPstring().str(), p->getIP(),
-			(n == 0) ? "   <-- LanLobbyMenuInit fallback picks this one" : "");
+			(n == 0) ? "   <-- head of the list; the pre-fix menu fallback picked this" : "");
 		++n;
 	}
 	if (n == 0) printf("  (none)\n");
+	printf("--- SelectLANLocalAddress() with no configured preference ---\n");
+	{
+		char a[32]; fmtIP(SelectLANLocalAddress(list, 0), a);
+		printf("  %s\n", a);
+	}
 	printf("--- local interfaces seen by the LAN code ---\n");
 	LANLocalInterface ifaces[MAX_LAN_LOCAL_INTERFACES];
 	const Int ifaceCount = gatherLocalInterfaces(ifaces, ARRAY_SIZE(ifaces));
