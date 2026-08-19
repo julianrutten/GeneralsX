@@ -298,7 +298,9 @@ static void debugDrawBlastCircle( const Coord3D *center, Real radius, Real tileW
 
 	// space the icons roughly one tile apart along the circumference, within sane bounds
 	tileWidth = max( tileWidth, 1.0f );
-	Int segments = (Int)ceilf( (2.0f * PI * radius) / tileWidth * 0.5f );
+	// GeneralsX @bugfix Claude 19/08/2026 Route incoming libm calls through the deterministic
+	// WWMath wrappers, per the cross-platform determinism rules in AGENTS.md.
+	Int segments = (Int)WWMath::Ceil( (2.0f * PI * radius) / tileWidth * 0.5f );
 	segments = clamp(1, segments, 256);
 
 	for( Int i = 0; i < segments; ++i )
@@ -306,8 +308,8 @@ static void debugDrawBlastCircle( const Coord3D *center, Real radius, Real tileW
 		Real angle = (2.0f * PI * i) / segments;
 		Coord3D pos;
 
-		pos.x = center->x + radius * cosf( angle );
-		pos.y = center->y + radius * sinf( angle );
+		pos.x = center->x + radius * WWMath::CosTrig( angle );
+		pos.y = center->y + radius * WWMath::SinTrig( angle );
 		pos.z = TheTerrainLogic->getGroundHeight( pos.x, pos.y );
 
 		addIcon( &pos, tileWidth, frameDuration, color );
