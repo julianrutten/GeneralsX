@@ -358,6 +358,44 @@ static int modeSelfTest()
 	}
 
 
+
+	printf("SelectLANLocalAddress\n");
+	{
+		check(SelectLANLocalAddress(nullptr, 0) == 0, "an empty candidate list yields 0 instead of a null dereference");
+
+		// The real list for this host: whatever is chosen has to be a candidate.
+		IPEnumeration ips;
+		EnumeratedIP *list = ips.getAddresses();
+		if (list != nullptr) {
+			UnsignedInt chosen = SelectLANLocalAddress(list, 0);
+			Bool isCandidate = FALSE;
+			for (EnumeratedIP *p = list; p != nullptr; p = p->getNext())
+				if (p->getIP() == chosen) isCandidate = TRUE;
+			check(isCandidate, "the chosen address is one of the enumerated candidates");
+
+			// A configured address that still exists must win outright.
+			UnsignedInt last = list->getIP();
+			for (EnumeratedIP *p = list; p != nullptr; p = p->getNext()) last = p->getIP();
+			check(SelectLANLocalAddress(list, last) == last, "a configured address that still exists is honoured");
+
+			// One that no longer exists must not be.
+			check(SelectLANLocalAddress(list, parseIP("203.0.113.7")) != parseIP("203.0.113.7"),
+				"a configured address that no longer exists is discarded");
+
+			// On this single-interface host the routed answer and the list head
+			// agree; the point of the assertion is that the routed answer is
+			// preferred when it is a candidate at all.
+			UnsignedInt routed = GetLocalAddressForPeer(parseIP("192.0.2.1"));
+			Bool routedIsCandidate = FALSE;
+			for (EnumeratedIP *p = list; p != nullptr; p = p->getNext())
+				if (p->getIP() == routed) routedIsCandidate = TRUE;
+			check(!routedIsCandidate || chosen == routed,
+				"the default-route address wins when it is a candidate");
+		} else {
+			printf("  skip this host enumerated no addresses\n");
+		}
+	}
+
 	printf("wide char wire conversion\n");
 	{
 		// LANAPI passes the capacity of the destination field, not the length of

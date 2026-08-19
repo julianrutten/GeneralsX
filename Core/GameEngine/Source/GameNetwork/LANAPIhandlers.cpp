@@ -333,7 +333,12 @@ void LANAPI::handleRequestJoin( LANMessage *msg, UnsignedInt senderIP )
 		PRINTF_IP_AS_4_INTS(senderIP), PRINTF_IP_AS_4_INTS(msg->GameToJoin.gameIP), PRINTF_IP_AS_4_INTS(m_localIP),
 		m_pendingAction, m_inLobby); */
 
-	if (msg->GameToJoin.gameIP != m_localIP)
+	// GeneralsX @bugfix Claude 19/08/2026 The joiner echoes back the slot 0 address it read out of
+	// our announce. That is whichever of our addresses we were calling our own when we announced,
+	// and it can differ from the one we are using now - the lobby rebinds and re-picks on the way
+	// in and out of the direct-connect screen. Accept the request as long as it names an address
+	// of this machine, rather than only the currently selected one (issue #86).
+	if (!isLocalAddress(msg->GameToJoin.gameIP))
 	{
 		/* 		fprintf(stderr, "[LAN86] handleRequestJoin ignored sender=%d.%d.%d.%d reason=wrong-game-ip\n",
 			PRINTF_IP_AS_4_INTS(senderIP)); */
