@@ -1,24 +1,31 @@
 # godmode environment definition for GeneralsX
 # GeneralsX @build Claude 19/08/2026 Give dispatched agents a real C++ toolchain.
 #
-# Without this file the repository is registered as a "workspace" repo: it declares no
-# services, so an agent gets godmode's default base image, which has no gcc, g++, clang,
-# clang-tidy, cmake, ninja, pkg-config or nasm, no vcpkg (VCPKG_ROOT unset, /opt/vcpkg
-# absent) and, of the game's own libraries, only freetype and fontconfig. An agent could
-# read and edit this repository but could not compile a line of it.
+# This repository declares no services and renders no Compose project: it is a desktop game,
+# so there is no server, no database and nothing to keep up. godmode registers it as a
+# *workspace* repository and validates this file against a stricter schema that refuses, by
+# name, every section such a repository could not act on - `slug`, `compose.files`, `routes`,
+# `scope`, `shared`, `database`, `templates`, `bootstrap`, `health`, `inject`, `tenancy`,
+# `verify`, `uses`, `logins` and `agent.base_service`. Any one of them fails `up` for the
+# whole repository, so keep this file to exactly what is below.
 #
-# Declaring a service changes this from a workspace repo to an ordinary one. The builder
-# service must therefore stay up - a service that runs a command and exits takes the
-# environment down with it - which is why it runs `sleep infinity`.
+# Without the `agent:` block an agent gets godmode's default base image, which has no gcc,
+# g++, clang, clang-tidy, cmake, ninja, pkg-config or nasm, no vcpkg (VCPKG_ROOT unset,
+# /opt/vcpkg absent) and, of the game's own libraries, only freetype and fontconfig. An agent
+# could read and edit this repository but could not compile a line of it.
 
-compose:
-  files:
-    - resources/dockerbuild/compose.dev.yml
+version: 1
+name: generalsx
 
 agent:
-  # godmode takes this Compose service's image and layers its own agent tooling (node,
-  # claude, codex, opencode, tmux, playwright) on top of it. The contract that base must
-  # honour, and how resources/dockerbuild/Dockerfile.dev honours it:
+  # godmode builds this Dockerfile with the worktree as the build context, tags the result as
+  # this repository's agent base image and layers its own agent tooling (node, claude, codex,
+  # opencode, tmux, playwright) on top. There are no build arguments and no separate build
+  # context - `base_args:` and `base_context:` do not exist - so the image has to be buildable
+  # as-is from the repository root. The root .dockerignore keeps that context down to the
+  # three dependency manifests the Dockerfile actually COPYs.
+  #
+  # The contract the base image must honour, and how Dockerfile.dev honours it:
   #
   #   - glibc Debian/Ubuntu: the layering step checks for `apt-get` and for
   #     `getconf GNU_LIBC_VERSION` and fails the whole `up` naming this repository if either
@@ -28,10 +35,12 @@ agent:
   #   - tooling reachable without a login shell: an `ENV PATH` in a Dockerfile does not
   #     survive Debian's /etc/profile, so cmake/ctest/cpack/vcpkg are symlinked into
   #     /usr/local/bin as well as living under /opt.
-  base_service: builder
+  base_dockerfile: resources/dockerbuild/Dockerfile.dev
 
-  # Must match where compose.dev.yml bind-mounts the checkout (`../..:/work`), so that a
-  # file path in agent output is the same path as in build output. /work is also what every
-  # scripts/build/linux/docker-*.sh already uses, and those scripts discard build/<preset>
-  # when its CMake cache was not generated with CMAKE_HOME_DIRECTORY == /work.
+  # Load-bearing, not cosmetic. Every scripts/build/linux/docker-*.sh runs the build with
+  # `-v "$PWD:/work" -w /work`, and each of them discards build/<preset> when that directory's
+  # CMakeCache.txt was not generated with CMAKE_HOME_DIRECTORY == /work
+  # (docker-configure-linux.sh:74, docker-build-linux-zh.sh:80, docker-build-linux-generals.sh:80).
+  # Mount the checkout anywhere else and an agent's configure output is thrown away by the next
+  # script run, and the script's output by the next agent. Dockerfile.dev's WORKDIR matches.
   workdir: /work

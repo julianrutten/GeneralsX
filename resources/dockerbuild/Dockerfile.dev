@@ -3,6 +3,12 @@
 # baked vcpkg, clang-tidy + replay-test tooling) usable both as a build image and as the
 # godmode agent base image.
 #
+# Built by : godmode, from `agent.base_dockerfile` in the repository-root godmode.yaml, with
+#            the worktree as the build context and no build arguments; or by hand with
+#            `docker build --platform linux/amd64 -f resources/dockerbuild/Dockerfile.dev \
+#             -t generalsx/linux-dev:latest .` from the repository root. The root
+#            .dockerignore keeps that context to the three dependency manifests COPYed below.
+#
 # Purpose : native Linux builds of BOTH game targets
 #             - GeneralsMD (Zero Hour) -> target z_generals -> build/<preset>/GeneralsMD/GeneralsXZH
 #             - Generals   (base game) -> target g_generals -> build/<preset>/Generals/GeneralsX
@@ -39,6 +45,11 @@
 #
 # A digest pin (ubuntu:24.04@sha256:...) would be stronger still; resolving one needs a
 # machine with Docker, which the author of this file did not have.
+#
+# A Dockerfile cannot pin its own platform. AGENTS.md golden rule 5 is "64-bit native -
+# x86_64 only" and every scripts/build/linux/docker-*.sh passes --platform linux/amd64, so a
+# hand build on an Apple Silicon host must pass it too or it produces an arm64 image the
+# presets do not target.
 FROM ubuntu:24.04
 
 LABEL maintainer="GeneralsX Project"
@@ -245,8 +256,13 @@ RUN mkdir -p /opt/cmake && \
 #                         - updating vcpkg means rebuilding the image
 #
 # For an agent container, "works with zero host-side setup" wins; the size cost is paid once
-# per host. The compose file additionally puts the vcpkg *binary cache* on a named volume so
-# compiled port artifacts survive container recreation.
+# per host. Baking also removes the need for a cache volume: the prewarmed binary cache in
+# layer 4 is an image layer, so every container started from this image already has it. What
+# no longer survives - since there is no Compose file and therefore no named volume - are
+# ports compiled *after* the container starts, i.e. after a vcpkg.json bump. Those are
+# rebuilt in each new container until the image itself is rebuilt, which re-runs the prewarm
+# because the manifest COPY invalidates that layer. Rebuilding the image is the intended fix;
+# a hand run can also mount a volume at /opt/vcpkg-cache to keep them.
 #
 # The commit is the one build-linux.yml checks out in its "Bootstrap vcpkg" step. It must be
 # a FULL clone (not --depth 1): manifest mode has to resolve the registry baseline
@@ -304,8 +320,17 @@ RUN if [ "${VCPKG_PREWARM}" = "1" ]; then \
 # ---------------------------------------------------------------------------
 # Environment
 # ---------------------------------------------------------------------------
-# [CMAKE] cmake/ccache.cmake picks ccache up automatically; CCACHE_DIR is pointed at a path
-# the compose file backs with a named volume so the cache outlives the container.
+# [CMAKE] cmake/ccache.cmake picks ccache up automatically (SAGE_USE_CCACHE defaults ON).
+#
+# /ccache is a plain directory in the image now that there is no Compose file to back it with
+# a named volume. Consequence, stated rather than papered over: the compiler cache is
+# container-local. It still pays for itself inside one container - godmode keeps an agent
+# container up across a session, so rebuilds and branch switches hit it - but a recreated
+# container starts cold and recompiles ~500k LOC. It is deliberately NOT moved under /work:
+# that path is a bind mount whose writability depends on the caller (the build scripts run
+# with `--user "$(id -u):$(id -g)"`), and ccache aborts the compile it is wrapping when its
+# cache directory cannot be created. Anyone who wants persistence mounts it explicitly:
+# `docker run -v generalsx-ccache:/ccache ...`, or overrides CCACHE_DIR per run.
 ENV CCACHE_DIR=/ccache
 RUN mkdir -p /ccache
 
@@ -317,8 +342,9 @@ ENV APPIMAGE_EXTRACT_AND_RUN=1
 # DXVK_WSI_DRIVER=SDL3, DXVK_LOG_LEVEL=none, VK_ICD_FILENAMES=<lavapipe>) is deliberately
 # NOT baked in as ENV. replay-tests.yml exports it per run, and hardcoding it in the image
 # would silently break an interactive `run-linux-zh.sh -win` for anyone who does have a
-# display or a real GPU. It is set on the builder service in compose.dev.yml instead, where
-# software rendering is always what is wanted.
+# display or a real GPU. With the Compose file gone there is nothing setting it per container
+# either, so a headless replay run has to export it itself; the exact block is in
+# docs/WORKDIR/support/DEV_CONTAINER.md, copied from replay-tests.yml.
 
 # /work matches every existing script: scripts/build/linux/docker-*.sh all run
 # `-v "$PWD:/work" -w /work`, and the CMake-cache guard in those scripts explicitly checks

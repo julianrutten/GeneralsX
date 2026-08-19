@@ -1,9 +1,14 @@
 # GeneralsX @build Claude 19/08/2026 Keep the build context for Dockerfile.dev tiny.
 #
-# resources/dockerbuild/compose.dev.yml builds with the repository ROOT as its context,
-# and the repository is ~500k LOC plus references/ and build/. Dockerfile.dev deliberately
-# COPYs nothing but the vcpkg dependency manifests - the checkout itself is bind-mounted at
-# runtime - so everything else is excluded here.
+# Dockerfile.dev is built with the repository ROOT as its context - godmode passes the
+# worktree as the context for `agent.base_dockerfile`, and the documented hand build is
+# `docker build -f resources/dockerbuild/Dockerfile.dev .` from the root - and the repository
+# is ~500k LOC plus references/ and build/. Dockerfile.dev deliberately COPYs nothing but the
+# vcpkg dependency manifests - the checkout itself is bind-mounted at runtime - so everything
+# else is excluded here.
+#
+# `*` also excludes `.git`, which is wanted twice over: the image needs no history, and in a
+# godmode worktree `.git` is a file pointing at a directory outside the context anyway.
 #
 # This only affects builds whose context is the repository root. The older images
 # (Dockerfile.linux, Dockerfile.mingw, Dockerfile) are built by
