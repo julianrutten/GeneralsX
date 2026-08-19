@@ -197,9 +197,15 @@ RUN apt-get update -qq && \
 # CMake version independent of base-image drift, which is the failure mode the existing
 # Dockerfile.mingw was working around when it hand-installed 3.25.0 on Ubuntu 22.04.
 ARG CMAKE_VERSION=3.31.6
+# Downloaded to a file rather than piped straight into tar: /bin/sh here is dash, which has
+# no `pipefail`, so a curl failure in a pipeline would be reported only by whatever tar made
+# of the truncated stream. Commit d5ef6594e turned pipefail on in CI for the same reason.
+# A SHA-256 pin on this download would be better still and is a good follow-up.
 RUN mkdir -p /opt/cmake && \
-    curl -fsSL "https://github.com/Kitware/CMake/releases/download/v${CMAKE_VERSION}/cmake-${CMAKE_VERSION}-linux-x86_64.tar.gz" \
-      | tar -xz -C /opt/cmake --strip-components=1 && \
+    curl -fsSL -o /tmp/cmake.tar.gz \
+      "https://github.com/Kitware/CMake/releases/download/v${CMAKE_VERSION}/cmake-${CMAKE_VERSION}-linux-x86_64.tar.gz" && \
+    tar -xzf /tmp/cmake.tar.gz -C /opt/cmake --strip-components=1 && \
+    rm -f /tmp/cmake.tar.gz && \
     # Symlink into /usr/local/bin rather than relying on ENV PATH alone: a Dockerfile ENV
     # PATH does not survive Debian's /etc/profile, and godmode's agent layering has already
     # been bitten by a toolchain that was installed, present and invisible.
