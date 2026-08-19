@@ -126,6 +126,11 @@ MoltenVK/DXVK-on-macOS.
   **not satisfied**. `scripts/qa/smoke/docker-smoke-test-zh.sh` needs a Docker
   daemon and could not be run either. Nothing here should be read as a passing
   smoke test.
+
+  Note for the next person: that launch writes an untracked `ReleaseCrashInfo.txt`
+  into the repository root, and `.gitignore` does not cover it. It was deleted
+  before committing (playbook step 12), but it will reappear on any run without
+  assets.
 - **macOS configure/build — NOT RUN.** Linux container.
 - **`scripts/build/linux/docker-*.sh` — NOT RUN.** No Docker daemon inside the
   container. The native `cmake --preset linux64-deploy` path from `/work` was
