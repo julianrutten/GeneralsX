@@ -790,6 +790,13 @@ void LANAPI::update()
 		switch (m_pendingAction)
 		{
 		case ACT_JOIN:
+			// GeneralsX @build Claude 19/08/2026 A join timeout is what the player actually sees when
+			// LAN is broken, and every way of reaching it is a silent drop somewhere else. Report the
+			// addresses involved on the console so a bug report from a release build is actionable.
+			fprintf(stderr, "[LAN] join timed out after %ums. local=%d.%d.%d.%d host=%d.%d.%d.%d game=%ls\n",
+				m_actionTimeout, PRINTF_IP_AS_4_INTS(m_localIP), PRINTF_IP_AS_4_INTS(m_directConnectRemoteIP),
+				(m_currentGame != nullptr) ? m_currentGame->getName().str() : L"<none>");
+			fflush(stderr);
 			// GeneralsX @build GitHubCopilot 12/04/2026 Surface join timeout details to stderr for LAN/direct-connect diagnostics.
 			/* 			fprintf(stderr, "[LAN86] action timeout action=ACT_JOIN local=%d.%d.%d.%d remote=%d.%d.%d.%d currentGame=%ls\n",
 				PRINTF_IP_AS_4_INTS(m_localIP), PRINTF_IP_AS_4_INTS(m_directConnectRemoteIP),
@@ -806,6 +813,11 @@ void LANAPI::update()
 			m_inLobby = true;
 			break;
 		case ACT_JOINDIRECTCONNECT:
+			// GeneralsX @build Claude 19/08/2026 See ACT_JOIN above. Reaching this means the host never
+			// answered our MSG_REQUEST_GAME_INFO, or its answer never made it back to us.
+			fprintf(stderr, "[LAN] direct connect timed out after %ums. local=%d.%d.%d.%d remote=%d.%d.%d.%d\n",
+				m_actionTimeout, PRINTF_IP_AS_4_INTS(m_localIP), PRINTF_IP_AS_4_INTS(m_directConnectRemoteIP));
+			fflush(stderr);
 			/* 			fprintf(stderr, "[LAN86] action timeout action=ACT_JOINDIRECTCONNECT local=%d.%d.%d.%d remote=%d.%d.%d.%d\n",
 				PRINTF_IP_AS_4_INTS(m_localIP), PRINTF_IP_AS_4_INTS(m_directConnectRemoteIP)); */
 			OnGameJoin(RET_TIMEOUT, nullptr);

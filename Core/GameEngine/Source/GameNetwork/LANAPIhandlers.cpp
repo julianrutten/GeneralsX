@@ -209,6 +209,10 @@ void LANAPI::handleGameAnnounce( LANMessage *msg, UnsignedInt senderIP )
 		if (!success)
 		{
 			// remove from list
+			// The usual cause is a map this machine cannot resolve; see
+			// ParseAsciiStringToGameInfo. The game silently never appears in the lobby list.
+			DEBUG_LOG(("LANAPI::handleGameAnnounce - dropping the game announced by %d.%d.%d.%d; its options string did not parse",
+				PRINTF_IP_AS_4_INTS(senderIP)));
 			removeGame(game);
 			delete game;
 			game = nullptr;
@@ -340,6 +344,8 @@ void LANAPI::handleRequestJoin( LANMessage *msg, UnsignedInt senderIP )
 	// of this machine, rather than only the currently selected one (issue #86).
 	if (!isLocalAddress(msg->GameToJoin.gameIP))
 	{
+		DEBUG_LOG(("LANAPI::handleRequestJoin - ignoring request from %d.%d.%d.%d for game at %d.%d.%d.%d; not one of our addresses",
+			PRINTF_IP_AS_4_INTS(senderIP), PRINTF_IP_AS_4_INTS(msg->GameToJoin.gameIP)));
 		/* 		fprintf(stderr, "[LAN86] handleRequestJoin ignored sender=%d.%d.%d.%d reason=wrong-game-ip\n",
 			PRINTF_IP_AS_4_INTS(senderIP)); */
 		return; // Not us.  Ignore it.
@@ -547,6 +553,8 @@ Bool LANAPI::isJoinReplyForUs( UnsignedInt replyPlayerIP )
 
 	if (m_pendingAction != ACT_JOIN || !isLocalAddress(replyPlayerIP))
 	{
+		DEBUG_LOG(("LANAPI::isJoinReplyForUs - dropping a join reply addressed to %d.%d.%d.%d; we are %d.%d.%d.%d and pendingAction is %d",
+			PRINTF_IP_AS_4_INTS(replyPlayerIP), PRINTF_IP_AS_4_INTS(m_localIP), m_pendingAction));
 		return FALSE;
 	}
 
