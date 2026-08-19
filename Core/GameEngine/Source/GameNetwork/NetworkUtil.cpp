@@ -127,6 +127,11 @@ Int LANSelectBroadcastDestinations( const LANLocalInterface *ifaces, Int ifaceCo
 		return 0;
 	}
 
+	if (ifaces == nullptr)
+	{
+		ifaceCount = 0;
+	}
+
 	Int count = 0;
 
 	for (Int i = 0; (i < ifaceCount) && (count < maxAddrs); ++i)
@@ -187,6 +192,11 @@ Bool LANIsLocalAddress( const LANLocalInterface *ifaces, Int ifaceCount,
 	if (addr == selectedLocalIP)
 	{
 		return TRUE;
+	}
+
+	if (ifaces == nullptr)
+	{
+		return FALSE;
 	}
 
 	for (Int i = 0; i < ifaceCount; ++i)

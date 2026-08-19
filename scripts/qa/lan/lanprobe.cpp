@@ -22,6 +22,8 @@ void *TheSDL3Window = nullptr;
 
 static const UnsignedShort kLobbyPort = 8086;
 
+static UnsignedInt parseIP(const char *s);
+
 static void fmtIP(UnsignedInt ip, char *out) {
 	sprintf(out, "%d.%d.%d.%d", PRINTF_IP_AS_4_INTS(ip));
 }
@@ -200,11 +202,23 @@ static int modeSelfEcho(UnsignedShort port, UnsignedInt dstIP, UnsignedInt claim
 // Can two LANAPI instances share the lobby port? (SO_REUSEADDR is never set.)
 static int modeBindTwice(UnsignedShort port)
 {
-	Transport a, b;
-	Bool ra = a.init(0, port);
-	Bool rb = b.init(0, port);
-	printf("first  bind 0.0.0.0:%d -> %s\n", port, ra ? "ok" : "FAILED");
-	printf("second bind 0.0.0.0:%d -> %s\n", port, rb ? "ok" : "FAILED");
+	{
+		Transport a, b;
+		Bool ra = a.init(0, port);
+		Bool rb = b.init(0, port);
+		printf("first  bind 0.0.0.0:%d -> %s\n", port, ra ? "ok" : "FAILED");
+		printf("second bind 0.0.0.0:%d -> %s\n", port, rb ? "ok" : "FAILED");
+	}
+	// What multi-instance mode assumes: IPEnumeration hands each instance its own
+	// 127.0.0.<id> address, and those do bind separately. They receive no
+	// broadcasts, though, so discovery between them still does not work.
+	{
+		Transport a, b;
+		Bool ra = a.init(parseIP("127.0.0.1"), port);
+		Bool rb = b.init(parseIP("127.0.0.2"), port);
+		printf("bind 127.0.0.1:%d -> %s\n", port, ra ? "ok" : "FAILED");
+		printf("bind 127.0.0.2:%d -> %s\n", port, rb ? "ok" : "FAILED");
+	}
 	return 0;
 }
 
@@ -227,8 +241,6 @@ static int modeStuckSend(UnsignedShort port, UnsignedInt dstIP)
 	}
 	return 0;
 }
-
-static UnsignedInt parseIP(const char *s);
 
 // Send one announce under each destination-selection policy and let a listener
 // elsewhere report which of them actually arrived. The interface list is given

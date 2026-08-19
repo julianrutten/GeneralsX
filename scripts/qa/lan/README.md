@@ -68,9 +68,28 @@ Everything here was produced by running the harness, not by reading code.
    claimed m_localIP 172.17.0.1  -> own datagram from 10.192.90.5: does NOT drop it
    ```
 
-4. **Two lobby sockets cannot share a port.** `SO_REUSEADDR` is never set, so
-   the second bind fails. Two instances on one machine cannot both enter the LAN
-   lobby, which is a large part of why this bug is hard to reproduce.
+4. **Two lobby sockets cannot share a port, and that is why this is hard to
+   test.** `SO_REUSEADDR` is never set:
+
+   ```
+   first  bind 0.0.0.0:9040 -> ok
+   second bind 0.0.0.0:9040 -> FAILED
+   bind 127.0.0.1:9040 -> ok
+   bind 127.0.0.2:9040 -> ok
+   ```
+
+   Multi-instance mode gives each instance its own `127.0.0.<id>` address
+   (`IPEnumeration::getAddresses`), and those *do* bind separately — but on POSIX
+   `LANAPI` binds `INADDR_ANY`, so the second instance's bind fails,
+   `SetLocalIP()` returns FALSE and the lobby immediately reports a socket error
+   and backs out. Binding the loopback addresses instead would not help either,
+   because a socket bound to a unicast address receives no broadcasts at all
+   (observation 2), so the instances would never discover each other.
+
+   The consequence is that **LAN cannot be exercised with two instances on one
+   Linux machine**. Testing needs two machines, or two containers/VMs with
+   separate network namespaces. That is the single biggest obstacle to anyone
+   reproducing issue #86, and it is not addressed here.
 
 5. **A send to a subnet the host is not on succeeds silently.** Broadcasting to
    `192.168.254.255` from a host that only has `10.192.90.0/24` returns success

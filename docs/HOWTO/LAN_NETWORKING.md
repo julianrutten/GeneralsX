@@ -35,7 +35,15 @@ in this document is about the lobby only.
 * `SO_BROADCAST` is set immediately after bind via
   `Transport::allowBroadcasts(true)` → `UDP::AllowBroadcasts`. **[verified]**
 * `SO_REUSEADDR` is **never** set. Two instances of the game on one host
-  therefore cannot both open the lobby.
+  therefore cannot both open the lobby. On POSIX this is worse than it sounds:
+  the bind is `INADDR_ANY`, so the second instance's bind fails outright,
+  `SetLocalIP()` returns FALSE and the lobby reports a socket error and backs
+  out to the main menu. Multi-instance mode's `127.0.0.<id>` addresses do not
+  rescue it, because a socket bound to a unicast address receives no broadcasts
+  (**[verified]**). **LAN therefore cannot be exercised with two instances on one
+  Linux machine at all** — testing needs two machines or two network namespaces.
+  That is the single biggest obstacle to reproducing anything in this document,
+  and nothing here changes it.
 * The socket is set non-blocking (`UDP::SetBlocking(FALSE)`); `Transport::doRecv`
   drains it with `recvfrom` until `EWOULDBLOCK`.
 * Every reply is sent to `senderIP:8086` — i.e. the *fixed* lobby port, never the
