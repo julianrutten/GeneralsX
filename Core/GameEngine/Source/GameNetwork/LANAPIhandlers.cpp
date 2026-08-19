@@ -44,34 +44,45 @@
 // These functions handle conversion between WideChar (wchar_t) and WideCharWindows (uint16_t)
 // Required because wchar_t size varies (2 bytes Windows, 4 bytes Linux) but network protocol needs fixed size
 
+// GeneralsX @bugfix Claude 19/08/2026 Stop at the source terminator.
+// Callers pass the capacity of the destination field, not the length of the string, so copying a
+// fixed len ran off the end of the source: a two-character chat message was read as a hundred
+// wide characters. Confirmed under AddressSanitizer as a heap-buffer-overflow read, and it also
+// put up to 200 bytes of adjacent heap into every outgoing LAN packet.
+// len is the number of characters the destination can hold excluding its terminator.
 void CopyWcharToWindowsWideChar( WideCharWindows *dest, const WideChar *src, UnsignedInt len )
 {
-	for (UnsignedInt i = 0; i < len; ++i)
+	UnsignedInt i = 0;
+	if (src != nullptr)
 	{
-		dest[i] = src[i];
+		while (i < len && src[i] != 0)
+		{
+			dest[i] = (WideCharWindows)src[i];
+			++i;
+		}
 	}
-	dest[len] = 0;
+	dest[i] = 0;
 }
 
+// GeneralsX @bugfix Claude 19/08/2026 Bound the scan and never return null.
+// The length scan had no upper bound, so a field that arrived without a terminator walked off the
+// end of the packet, and the "too long" test used > rather than >=, which wrote one past the end
+// of buf at exactly MAX_COMPUTERNAME_LENGTH. Returning null was worse still: no caller checks, and
+// ContainsInvalidChars() would dereference it. Truncate instead - the result is only ever used as
+// a display name or compared against one.
 wchar_t *GetWindowsWideCharAsWchar( WideCharWindows *src )
 {
 	static wchar_t buf[MAX_COMPUTERNAME_LENGTH];
-	// Get the length of the string
+	static const UnsignedInt maxLen = ARRAY_SIZE(buf) - 1;
+
 	UnsignedInt len = 0;
-	while (src[len] != 0)
+	if (src != nullptr)
 	{
-		++len;
-	}
-
-	if (len > MAX_COMPUTERNAME_LENGTH)
-	{
-		return NULL; // too long
-	}
-
-	// Copy the string
-	for (UnsignedInt i = 0; i < len; ++i)
-	{
-		buf[i] = src[i];
+		while (len < maxLen && src[len] != 0)
+		{
+			buf[len] = (wchar_t)src[len];
+			++len;
+		}
 	}
 	buf[len] = 0;
 	return buf;
@@ -83,7 +94,7 @@ void LANAPI::handleRequestLocations( LANMessage *msg, UnsignedInt senderIP )
 		PRINTF_IP_AS_4_INTS(senderIP), m_inLobby, (m_currentGame != nullptr)); */
 	if (m_inLobby)
 	{
-		LANMessage reply;
+		LANMessage reply = {};
 		fillInLANMessage( &reply );
 		reply.messageType = LANMessage::MSG_LOBBY_ANNOUNCE;
 
@@ -97,7 +108,7 @@ void LANAPI::handleRequestLocations( LANMessage *msg, UnsignedInt senderIP )
 		{
 			if (m_currentGame->getIP(0) == m_localIP)
 			{
-				LANMessage reply;
+				LANMessage reply = {};
 				fillInLANMessage( &reply );
 				reply.messageType = LANMessage::MSG_GAME_ANNOUNCE;
 				AsciiString gameOpts = GenerateGameOptionsString();
@@ -252,7 +263,7 @@ void LANAPI::handleRequestGameInfo( LANMessage *msg, UnsignedInt senderIP )
 	{
 		if (m_currentGame->getIP(0) == m_localIP || (m_currentGame->isGameInProgress() && TheNetwork && TheNetwork->isPacketRouter())) // if we're in game we should reply if we're the packet router
 		{
-			LANMessage reply;
+			LANMessage reply = {};
 			fillInLANMessage( &reply );
 			reply.messageType = LANMessage::MSG_GAME_ANNOUNCE;
 
@@ -328,7 +339,7 @@ void LANAPI::handleRequestJoin( LANMessage *msg, UnsignedInt senderIP )
 			PRINTF_IP_AS_4_INTS(senderIP)); */
 		return; // Not us.  Ignore it.
 	}
-	LANMessage reply;
+	LANMessage reply = {};
 	fillInLANMessage( &reply );
 	if (!m_inLobby && m_currentGame && m_currentGame->getIP(0) == m_localIP)
 	{

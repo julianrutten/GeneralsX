@@ -10,6 +10,7 @@
 #include <net/if.h>
 #include <arpa/inet.h>
 #include <unistd.h>
+#include <cwchar>
 
 // --- globals the engine archives expect from the game's main TU ---
 const char *g_csfFile = "data/%s/Generals.csf";
@@ -354,6 +355,45 @@ static int modeSelfTest()
 		UnsignedInt routed = GetLocalAddressForPeer(parseIP("8.8.8.8"));
 		check(routed == 0 || LANIsLocalAddress(ifaces, n, 0, routed),
 			"the routed source address is one of this machine's addresses");
+	}
+
+
+	printf("wide char wire conversion\n");
+	{
+		// LANAPI passes the capacity of the destination field, not the length of
+		// the string. Copying a fixed count read past the end of the source, which
+		// AddressSanitizer flags as a heap-buffer-overflow read and which put
+		// adjacent heap into every outgoing packet.
+		WideCharWindows dest[101];
+		for (size_t i = 0; i < ARRAY_SIZE(dest); ++i) dest[i] = 0xBEEF;
+		CopyWcharToWindowsWideChar(dest, L"hi", ARRAY_SIZE(dest) - 1);
+		check(dest[0] == L'h' && dest[1] == L'i' && dest[2] == 0,
+			"a short string is copied and terminated at its own length");
+		check(dest[3] == 0xBEEF, "nothing is written past the terminator");
+
+		// Exactly filling the field must still leave room for the terminator.
+		WideCharWindows small[4];
+		CopyWcharToWindowsWideChar(small, L"abcdef", ARRAY_SIZE(small) - 1);
+		check(small[0] == L'a' && small[2] == L'c' && small[3] == 0,
+			"an over-long string is truncated to the field capacity");
+
+		CopyWcharToWindowsWideChar(small, L"", ARRAY_SIZE(small) - 1);
+		check(small[0] == 0, "an empty string writes just a terminator");
+	}
+	{
+		WideCharWindows name[13];
+		CopyWcharToWindowsWideChar(name, L"Player", ARRAY_SIZE(name) - 1);
+		check(wcscmp(GetWindowsWideCharAsWchar(name), L"Player") == 0, "round trips a name");
+
+		// A field that arrives without a terminator used to send the length scan
+		// off the end of the packet, and the bounds test was off by one, so a
+		// string of exactly MAX_COMPUTERNAME_LENGTH wrote one past the static
+		// buffer. Callers never checked the null it returned either.
+		WideCharWindows unterminated[MAX_COMPUTERNAME_LENGTH + 8];
+		for (size_t i = 0; i < ARRAY_SIZE(unterminated); ++i) unterminated[i] = L'x';
+		wchar_t *out = GetWindowsWideCharAsWchar(unterminated);
+		check(out != nullptr, "an unterminated field does not yield a null pointer");
+		check(wcslen(out) == MAX_COMPUTERNAME_LENGTH - 1, "an unterminated field is truncated, not overrun");
 	}
 
 	printf("%s (%d failure%s)\n", s_failures ? "SELFTEST FAILED" : "selftest passed",

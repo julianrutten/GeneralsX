@@ -267,7 +267,7 @@ void LANAPI::reset()
 {
 	if (m_inLobby)
 	{
-		LANMessage msg;
+		LANMessage msg = {};
 		fillInLANMessage( &msg );
 		msg.messageType = LANMessage::MSG_REQUEST_LOBBY_LEAVE;
 		sendMessage(&msg);
@@ -718,7 +718,7 @@ void LANAPI::update()
 		{
 			// We haven't heard from the host in a while.  Bail.
 			// Actually, fake a host leaving message. :)
-			LANMessage msg;
+			LANMessage msg = {};
 			fillInLANMessage( &msg );
 			msg.messageType = LANMessage::MSG_REQUEST_GAME_LEAVE;
 			// GeneralsX @bugfix BenderAI 13/02/2026 Use CopyWcharToWindowsWideChar (fighter19 pattern)
@@ -735,7 +735,7 @@ void LANAPI::update()
 			{
 				if (m_currentGame->getIP(p) && m_currentGame->getPlayerLastHeard(p) + s_resendDelta*8 < now)
 				{
-					LANMessage msg;
+					LANMessage msg = {};
 					fillInLANMessage( &msg );
 					UnicodeString theStr;
 					theStr.format(TheGameText->fetch("LAN:PlayerDropped"), m_currentGame->getPlayerName(p).str());
@@ -821,7 +821,7 @@ void LANAPI::update()
 // Request functions generate network traffic
 void LANAPI::RequestLocations()
 {
-	LANMessage msg;
+	LANMessage msg = {};
 	msg.messageType = LANMessage::MSG_REQUEST_LOCATIONS;
 	fillInLANMessage( &msg );
 	// GeneralsX @build GitHubCopilot 11/04/2026 Trace LAN discovery probes emitted by this client.
@@ -850,7 +850,7 @@ void LANAPI::RequestGameJoin( LANGameInfo *game, UnsignedInt ip /* = 0 */ )
 	// we call our own is the one the routing table will actually use to reach this host (#86).
 	adoptLocalAddressForPeer(game->getSlot(0)->getIP());
 
-	LANMessage msg;
+	LANMessage msg = {};
 	msg.messageType = LANMessage::MSG_REQUEST_JOIN;
 	fillInLANMessage( &msg );
 	msg.GameToJoin.gameIP = game->getSlot(0)->getIP();
@@ -893,7 +893,7 @@ void LANAPI::RequestGameJoinDirectConnect(UnsignedInt ipaddress)
 	/* 	fprintf(stderr, "[LAN86] RequestGameJoinDirectConnect local=%d.%d.%d.%d remote=%d.%d.%d.%d prevPending=%d\n",
 		PRINTF_IP_AS_4_INTS(m_localIP), PRINTF_IP_AS_4_INTS(ipaddress), m_pendingAction); */
 
-	LANMessage msg;
+	LANMessage msg = {};
 	msg.messageType = LANMessage::MSG_REQUEST_GAME_INFO;
 	fillInLANMessage(&msg);
 	msg.PlayerInfo.ip = GetLocalIP();
@@ -908,7 +908,7 @@ void LANAPI::RequestGameJoinDirectConnect(UnsignedInt ipaddress)
 
 void LANAPI::RequestGameLeave()
 {
-	LANMessage msg;
+	LANMessage msg = {};
 	msg.messageType = LANMessage::MSG_REQUEST_GAME_LEAVE;
 	fillInLANMessage( &msg );
 	// GeneralsX @bugfix BenderAI 13/02/2026 Use CopyWcharToWindowsWideChar (fighter19 pattern)
@@ -938,7 +938,7 @@ void LANAPI::RequestGameAnnounce()
 	{
 		if (m_currentGame->getIP(0) == m_localIP || (m_currentGame->isGameInProgress() && TheNetwork && TheNetwork->isPacketRouter())) // if we're in game we should reply if we're the packet router
 		{
-			LANMessage reply;
+			LANMessage reply = {};
 			fillInLANMessage( &reply );
 			reply.messageType = LANMessage::MSG_GAME_ANNOUNCE;
 
@@ -959,7 +959,7 @@ void LANAPI::RequestAccept()
 	if (m_inLobby || !m_currentGame)
 		return;
 
-	LANMessage msg;
+	LANMessage msg = {};
 	fillInLANMessage( &msg );
 	msg.messageType = LANMessage::MSG_SET_ACCEPT;
 	msg.Accept.isAccepted = true;
@@ -973,7 +973,7 @@ void LANAPI::RequestHasMap()
 	if (m_inLobby || !m_currentGame)
 		return;
 
-	LANMessage msg;
+	LANMessage msg = {};
 	fillInLANMessage( &msg );
 	msg.messageType = LANMessage::MSG_MAP_AVAILABILITY;
 	msg.MapStatus.hasMap = m_currentGame->getSlot(m_currentGame->getLocalSlotNum())->hasMap();
@@ -1013,7 +1013,7 @@ void LANAPI::RequestHasMap()
 
 void LANAPI::RequestChat( UnicodeString message, ChatType format )
 {
-	LANMessage msg;
+	LANMessage msg = {};
 	fillInLANMessage( &msg );
 	// GeneralsX @bugfix BenderAI 13/02/2026 Use CopyWcharToWindowsWideChar (fighter19 pattern)
 	CopyWcharToWindowsWideChar(msg.Chat.gameName, (m_currentGame) ? m_currentGame->getName().str() : L"", ARRAY_SIZE(msg.Chat.gameName) - 1);
@@ -1031,7 +1031,7 @@ void LANAPI::RequestGameStart()
 	if (m_inLobby || !m_currentGame || m_currentGame->getIP(0) != m_localIP)
 		return;
 
-	LANMessage msg;
+	LANMessage msg = {};
 	msg.messageType = LANMessage::MSG_GAME_START;
 	fillInLANMessage( &msg );
 	sendMessage(&msg);
@@ -1055,7 +1055,7 @@ void LANAPI::RequestGameStartTimer( Int seconds )
 	m_gameStartTime = now + 1000;
 	m_gameStartSeconds = (seconds) ? seconds - 1 : 0;
 
-	LANMessage msg;
+	LANMessage msg = {};
 	msg.messageType = LANMessage::MSG_GAME_START_TIMER;
 	msg.StartTimer.seconds = seconds;
 	fillInLANMessage( &msg );
@@ -1072,7 +1072,7 @@ void LANAPI::RequestGameOptions( AsciiString gameOptions, Bool isPublic, Unsigne
 	if (!m_currentGame)
 		return;
 
-	LANMessage msg;
+	LANMessage msg = {};
 	fillInLANMessage( &msg );
 	msg.messageType = LANMessage::MSG_GAME_OPTIONS;
 	strlcpy(msg.GameOptions.options, gameOptions.str(), ARRAY_SIZE(msg.GameOptions.options));
@@ -1168,7 +1168,7 @@ void LANAPI::RequestGameCreate( UnicodeString gameName, Bool isDirectConnect )
 	// Send an announcement
 	//RequestSlotList();
 /*
-	LANMessage msg;
+	LANMessage msg = {};
 	wcslcpy(msg.name, m_name.str(), ARRAY_SIZE(msg.name));
 	wcscpy(msg.GameInfo.gameName, myGame->getName().str());
 	for (player=0; player<MAX_SLOTS; ++player)
@@ -1238,7 +1238,7 @@ AsciiString LANAPI::createSlotString()
 void LANAPI::RequestSlotList()
 {
 
-	LANMessage reply;
+	LANMessage reply = {};
 	reply.messageType = LANMessage::MSG_GAME_ANNOUNCE;
 	wcslcpy(reply.name, m_name.str(), ARRAY_SIZE(reply.name));
 	int player;
@@ -1272,7 +1272,7 @@ void LANAPI::RequestSetName( UnicodeString newName )
 	if (m_inLobby && m_pendingAction == ACT_NONE)
 	{
 		m_name = newName;
-		LANMessage msg;
+		LANMessage msg = {};
 		fillInLANMessage( &msg );
 		msg.messageType = LANMessage::MSG_LOBBY_ANNOUNCE;
 		sendMessage(&msg);
@@ -1312,7 +1312,7 @@ void LANAPI::fillInLANMessage( LANMessage *msg )
 
 void LANAPI::RequestLobbyLeave( Bool forced )
 {
-	LANMessage msg;
+	LANMessage msg = {};
 	msg.messageType = LANMessage::MSG_REQUEST_LOBBY_LEAVE;
 	fillInLANMessage( &msg );
 	sendMessage(&msg);
@@ -1540,7 +1540,7 @@ void LANAPI::setIsActive(Bool isActive) {
 		DEBUG_LOG(("LANAPI::setIsActive - m_isActive changed to %s", isActive ? "TRUE" : "FALSE"));
 		if (isActive == FALSE) {
 			if ((m_inLobby == FALSE) && (m_currentGame != nullptr)) {
-				LANMessage msg;
+				LANMessage msg = {};
 				fillInLANMessage( &msg );
 				msg.messageType = LANMessage::MSG_INACTIVE;
 				sendMessage(&msg);
