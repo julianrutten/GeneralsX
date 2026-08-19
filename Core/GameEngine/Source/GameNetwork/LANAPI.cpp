@@ -175,6 +175,28 @@ Bool LANAPI::isLocalAddress( UnsignedInt ip ) const
 }
 
 /**
+ * Move to another of this machine's addresses without touching the socket.
+ *
+ * Every LANGameInfo caches the local address it was built with, and
+ * LANGameSlot::isLocalPlayer() - which is how a joiner finds its own slot in the
+ * host's slot list - compares against TheLAN's, so both have to move together.
+ */
+void LANAPI::applyLocalIP( UnsignedInt ip )
+{
+	if (ip == m_localIP)
+	{
+		return;
+	}
+
+	m_localIP = ip;
+
+	for (LANGameInfo *game = m_games; game != nullptr; game = game->getNext())
+	{
+		game->setLocalIP(m_localIP);
+	}
+}
+
+/**
  * Switch m_localIP to the address this machine would actually send from when
  * talking to peerIP.
  *
@@ -198,7 +220,10 @@ void LANAPI::adoptLocalAddressForPeer( UnsignedInt peerIP )
 		return;
 	}
 
-	// Only ever move to another address of this machine.
+	// Only ever move to another address of this machine. On Windows there is no getifaddrs, so the
+	// interface list is empty and this reduces to routedIP == m_localIP, which the test above has
+	// already excluded - the whole function is a no-op there. That is the correct outcome: Windows
+	// binds the lobby socket to m_localIP, so its source address is pinned and cannot disagree.
 	if (!isLocalAddress(routedIP))
 	{
 		return;
@@ -207,7 +232,7 @@ void LANAPI::adoptLocalAddressForPeer( UnsignedInt peerIP )
 	DEBUG_LOG(("LANAPI::adoptLocalAddressForPeer - %d.%d.%d.%d reaches %d.%d.%d.%d, was using %d.%d.%d.%d",
 		PRINTF_IP_AS_4_INTS(routedIP), PRINTF_IP_AS_4_INTS(peerIP), PRINTF_IP_AS_4_INTS(m_localIP)));
 
-	m_localIP = routedIP;
+	applyLocalIP(routedIP);
 }
 
 LANAPI::~LANAPI()

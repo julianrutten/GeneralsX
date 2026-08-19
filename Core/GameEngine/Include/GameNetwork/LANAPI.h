@@ -407,6 +407,7 @@ protected:
 	void refreshLocalInterfaces();									///< re-read this machine's interface list
 	Bool isLocalAddress(UnsignedInt ip) const;			///< TRUE if ip belongs to this machine
 	void adoptLocalAddressForPeer(UnsignedInt peerIP);	///< use the address that actually reaches peerIP
+	void applyLocalIP(UnsignedInt ip);							///< move to another local address without rebinding
 	Bool isJoinReplyForUs(UnsignedInt replyPlayerIP);	///< TRUE if a join accept/deny answers our join
 
 	void removePlayer(LANPlayer *player);

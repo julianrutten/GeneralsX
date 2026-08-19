@@ -553,7 +553,7 @@ Bool LANAPI::isJoinReplyForUs( UnsignedInt replyPlayerIP )
 	DEBUG_LOG(("LANAPI::isJoinReplyForUs - host saw us as %d.%d.%d.%d, we were using %d.%d.%d.%d; adopting theirs",
 		PRINTF_IP_AS_4_INTS(replyPlayerIP), PRINTF_IP_AS_4_INTS(m_localIP)));
 
-	m_localIP = replyPlayerIP;
+	applyLocalIP(replyPlayerIP);
 	return TRUE;
 }
 
