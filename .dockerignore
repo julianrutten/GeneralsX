@@ -1,0 +1,15 @@
+# GeneralsX @build Claude 19/08/2026 Keep the build context for Dockerfile.dev tiny.
+#
+# resources/dockerbuild/compose.dev.yml builds with the repository ROOT as its context,
+# and the repository is ~500k LOC plus references/ and build/. Dockerfile.dev deliberately
+# COPYs nothing but the vcpkg dependency manifests - the checkout itself is bind-mounted at
+# runtime - so everything else is excluded here.
+#
+# This only affects builds whose context is the repository root. The older images
+# (Dockerfile.linux, Dockerfile.mingw, Dockerfile) are built by
+# scripts/env/docker/docker-build-images.sh with resources/dockerbuild/ as their context
+# and are unaffected.
+*
+!vcpkg.json
+!vcpkg-lock.json
+!triplets

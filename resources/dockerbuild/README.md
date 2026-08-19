@@ -4,6 +4,37 @@ This directory contains Dockerfiles for GeneralsX development environments.
 
 ## Images
 
+### `Dockerfile.dev`
+**Image**: `generalsx/linux-dev:latest`
+**Purpose**: Native Linux development environment for GeneralsX and GeneralsXZH, and the
+base image godmode layers agent tooling onto (see `godmode.yaml`).
+**Base**: Ubuntu 24.04 (linux/amd64) - the series CI's `ubuntu-latest` resolves to
+
+**Includes**:
+- GCC + Clang, Ninja, CMake 3.31.6 (pinned; the repo floor is 3.25)
+- vcpkg **baked into the image**, pinned to the commit `build-linux.yml` checks out, with a
+  prewarmed binary cache
+- clang-tidy, gdb, ccache, git-lfs, p7zip-full, mesa-vulkan-drivers (headless replay)
+- The full `build-linux.yml` package list, including `libvulkan-dev` (which
+  `Dockerfile.linux` omits)
+
+**Build** (from the repository root, via Compose):
+```bash
+docker compose -f resources/dockerbuild/compose.dev.yml build builder
+docker compose -f resources/dockerbuild/compose.dev.yml up -d builder
+docker compose -f resources/dockerbuild/compose.dev.yml exec builder \
+    bash -lc 'cmake --preset linux64-deploy && cmake --build build/linux64-deploy --target z_generals'
+```
+
+See [docs/WORKDIR/support/DEV_CONTAINER.md](../../docs/WORKDIR/support/DEV_CONTAINER.md) for
+the dependency analysis behind this image, how it differs from `Dockerfile.linux`, and the
+full build-and-verify sequence.
+
+> **Note**: parts of the rest of this README are stale. `Dockerfile.linux` is currently
+> `ubuntu:26.04`, not Ubuntu 22.04, and ships neither Clang nor a pinned CMake. The
+> `scripts/docker-vcpkg-init.sh` referenced below does not exist in this repository.
+
+
 ### `Dockerfile.linux`
 **Image**: `generalsx/linux-builder:latest`  
 **Purpose**: Linux native ELF builds (GeneralsX, GeneralsXZH)  
