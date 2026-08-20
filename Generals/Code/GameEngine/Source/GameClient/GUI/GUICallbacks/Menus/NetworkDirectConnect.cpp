@@ -328,7 +328,9 @@ void NetworkDirectConnectInit( WindowLayout *layout, void *userData )
 
 			if (foundIP == FALSE) {
 				// The IP that we had no longer exists, we need to pick a new one.
-				IP = IPlist->getIP();
+				// GeneralsX @bugfix Claude 19/08/2026 Pick by reachability rather than by numeric
+				// order, and cope with an empty list, which this code dereferenced (issue #86).
+				IP = SelectLANLocalAddress(IPlist, 0);
 			}
 
 //			IP = IPlist->getIP();

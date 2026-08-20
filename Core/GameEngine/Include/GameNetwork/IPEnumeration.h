@@ -75,3 +75,19 @@ protected:
 	EnumeratedIP *m_IPlist;
 	Bool m_isWinsockInitialized;
 };
+
+/**
+ * Pick the local address the LAN code should call its own.
+ *
+ * GeneralsX @bugfix Claude 19/08/2026 (issue #86) The menus used to fall back to the head of the
+ * enumerated list, which IPEnumeration keeps sorted by numeric address. That is arbitrary with
+ * respect to reachability: a docker-compose bridge on 172.18.x or a container network on 10.x
+ * sorts below a 192.168.x home LAN and wins. The address is not only used for discovery - it is
+ * what a host advertises as slot 0, and what every client then connects to for the actual game
+ * session - so a wrong choice survives the lobby and breaks the match instead.
+ *
+ * @param ipList          the enumerated candidates, in list order
+ * @param preferredIP     the configured address, or 0; honoured whenever it is still a candidate
+ * @return the chosen address, or 0 if there are no candidates at all
+ */
+UnsignedInt SelectLANLocalAddress( EnumeratedIP *ipList, UnsignedInt preferredIP );

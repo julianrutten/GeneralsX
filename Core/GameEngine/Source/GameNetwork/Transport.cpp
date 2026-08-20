@@ -257,6 +257,19 @@ Bool Transport::doSend() {
 				//DEBUG_LOG(("Could not write to socket!!!  Not discarding message!"));
 				retval = FALSE;
 				//DEBUG_LOG(("Transport::doSend returning FALSE"));
+
+				// GeneralsX @bugfix Claude 19/08/2026 A destination the socket layer will never
+				// accept - a zero address or port - makes UDP::Write return before it even calls
+				// sendto. Leaving the slot occupied means it is retried on every update and can
+				// never be reused, so a single bad destination slowly starves the send queue while
+				// Transport::update() keeps reporting success. Drop those; keep retrying the rest,
+				// which is the transient case this branch was written for.
+				if (m_outBuffer[i].addr == 0 || m_outBuffer[i].port == 0)
+				{
+					DEBUG_LOG(("Transport::doSend - discarding message queued for %d.%d.%d.%d:%d",
+						PRINTF_IP_AS_4_INTS(m_outBuffer[i].addr), m_outBuffer[i].port));
+					m_outBuffer[i].length = 0;
+				}
 			}
 		}
 	}

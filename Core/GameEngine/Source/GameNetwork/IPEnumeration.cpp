@@ -258,6 +258,51 @@ void IPEnumeration::addNewIP( UnsignedByte a, UnsignedByte b, UnsignedByte c, Un
 	}
 }
 
+// GeneralsX @bugfix Claude 19/08/2026 Choose a local address by reachability rather than by
+// numeric order (issue #86). See the header for why the old fallback was wrong.
+UnsignedInt SelectLANLocalAddress( EnumeratedIP *ipList, UnsignedInt preferredIP )
+{
+	if (ipList == nullptr)
+	{
+		return 0;
+	}
+
+	// An explicitly configured address wins for as long as it still exists.
+	if (preferredIP != 0)
+	{
+		for (EnumeratedIP *candidate = ipList; candidate != nullptr; candidate = candidate->getNext())
+		{
+			if (candidate->getIP() == preferredIP)
+			{
+				return preferredIP;
+			}
+		}
+	}
+
+	// Otherwise ask the routing table which interface this machine sends from by default. The
+	// probe address is TEST-NET-1 from RFC 5737, which is reserved for documentation and is never
+	// contacted - connect() on a datagram socket transmits nothing, it only resolves the route.
+	// A default route over a VPN tunnel answers with the tunnel's address, which IPEnumeration
+	// does not list, so those setups fall through to the old behaviour rather than picking it.
+	static const UnsignedInt routeProbeAddress = 0xC0000201u; // 192.0.2.1
+	const UnsignedInt routedIP = GetLocalAddressForPeer(routeProbeAddress);
+	if (routedIP != 0)
+	{
+		for (EnumeratedIP *candidate = ipList; candidate != nullptr; candidate = candidate->getNext())
+		{
+			if (candidate->getIP() == routedIP)
+			{
+				DEBUG_LOG(("SelectLANLocalAddress - default route uses %d.%d.%d.%d", PRINTF_IP_AS_4_INTS(routedIP)));
+				return routedIP;
+			}
+		}
+	}
+
+	// No preference and no usable answer from the routing table: keep the historical behaviour.
+	DEBUG_LOG(("SelectLANLocalAddress - falling back to %d.%d.%d.%d", PRINTF_IP_AS_4_INTS(ipList->getIP())));
+	return ipList->getIP();
+}
+
 AsciiString IPEnumeration::getMachineName()
 {
 	if (!m_isWinsockInitialized)
