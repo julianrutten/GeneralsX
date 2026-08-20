@@ -60,9 +60,9 @@
 #                                               and libSDL3.so.0.
 #
 # The floor lands one release below the base's own glibc because nothing in the tree touches
-# a symbol first versioned in 2.39; the newest referenced are 2.38's __isoc23_str*/__isoc23_*scanf
-# (GCC 13 defaults to -std=gnu++17 with C23 library declarations), wcslcpy, and the 2.38
-# re-versioned fmod/fmodf.
+# a symbol first versioned in 2.39. The newest actually referenced, from `objdump -T`, are the
+# 2.38 __isoc23_strtol / __isoc23_sscanf / __isoc23_swscanf family (glibc's own headers
+# redirect the plain names to these), wcslcpy, and the 2.38 re-versioned fmod/fmodf.
 #
 # GLIBC_2.38 covers everything a player is plausibly running today: Ubuntu 24.04 LTS (2.39)
 # and every later Ubuntu including 26.04 (2.43), Debian 13 trixie (2.41), Fedora 39+ (2.38+),
