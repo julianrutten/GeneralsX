@@ -45,7 +45,7 @@ fi
 
 OVERALL="0"
 WORST=""
-for t in "${TARGETS[@]}"; do
+for t in ${TARGETS[@]+"${TARGETS[@]}"}; do
     [ -f "$t" ] || continue
     f="$(floor_of "$t")"
     [ -n "$f" ] || continue
@@ -69,7 +69,7 @@ if [ -n "$HOST" ]; then
     else
         echo ""
         echo "WARNING: this host has glibc ${HOST}, the binaries need >= ${OVERALL}."
-        echo "         They will fail at startup with \"version \\\`GLIBC_${OVERALL}' not found\"."
+        echo "         They will fail at startup with: version \`GLIBC_${OVERALL}' not found"
         echo "         The build image is newer than this machine. Rebuild the builder image:"
         echo "             ./scripts/env/docker/docker-build-images.sh linux"
         echo "         and check the FROM line in resources/dockerbuild/Dockerfile.dev."
