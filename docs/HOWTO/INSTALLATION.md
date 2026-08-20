@@ -75,6 +75,41 @@ GeneralsX has been developed and tested primarily on the following environments:
 
 Other Linux distributions or macOS versions may work, but you may need to install additional dependencies manually. On some systems, certain libraries might need to be built from source.
 
+### Linux: what the Flatpak actually requires
+
+The released Linux packages are Flatpak bundles, and a Flatpak carries its own runtime -
+`org.freedesktop.Platform` 25.08, including its own glibc 2.42. **Your distribution's glibc
+does not matter.** What you need is:
+
+- x86_64
+- Flatpak itself (any reasonably current version - see https://flatpak.org/setup/)
+- a working Vulkan driver from your host GPU stack (see the GPU driver note above)
+
+Ubuntu 26.04 is where the project is developed and where the numbers below were measured; it
+is not a minimum for the Flatpak.
+
+### Linux: what a *self-built* binary requires
+
+Building from source is a different story, because a native build links against the build
+machine's glibc and glibc symbol versioning is forward-only - a binary that references
+`GLIBC_x.y` starts on glibc >= x.y and nowhere else.
+
+| How it was built | Minimum glibc | Roughly |
+|---|---|---|
+| `scripts/build/linux/docker-build-linux-*.sh` (Docker image, `ubuntu:24.04`) | **2.38** | Ubuntu 24.04 LTS+, Debian 13+, Fedora 39+, RHEL 10+, current rolling distros |
+| Directly on your own machine | your machine's glibc | anything at least as new as your machine |
+| `.github/workflows/build-linux.yml` artifacts (`ubuntu-24.04` runner) | **2.38** | as above; the workflow fails if a build exceeds it |
+
+`scripts/build/linux/deploy-linux.sh` prints the floor of what it just deployed and warns if
+this machine is older, and you can check any binary directly:
+
+```bash
+objdump -T ~/GeneralsX/Generals/GeneralsX | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1
+```
+
+If your distribution is older than that - Ubuntu 22.04 LTS (glibc 2.35), Debian 12 (2.36),
+RHEL 9 (2.34) - install the Flatpak instead of building natively.
+
 ## Tested Platforms
 
 Current development and test matrix:
@@ -83,6 +118,9 @@ Current development and test matrix:
 |--------------------|------------------------|---------|
 | Ubuntu 26.04 LTS   | x86_64                 | Working |
 | macOS 26 "Tahoe"   | ARM64 (Apple Silicon)  | Working |
+
+These are the platforms the project is developed on, not minimum versions; for Linux, see
+"what the Flatpak actually requires" above.
 
 Support for other platforms and configurations is possible but not yet officially tested.
 

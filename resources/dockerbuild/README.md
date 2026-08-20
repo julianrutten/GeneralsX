@@ -5,32 +5,38 @@ This directory contains Dockerfiles for GeneralsX development environments.
 ## Images
 
 ### `Dockerfile.dev`
-**Image**: `generalsx/linux-dev:latest`
-**Purpose**: Native Linux development environment for GeneralsX and GeneralsXZH, and the
-base image godmode layers agent tooling onto (see `godmode.yaml`, which lives in the private
-`devmastersbv/godmode-env` overlay rather than this repository).
-**Base**: Ubuntu 24.04 (linux/amd64) - the series CI's `ubuntu-latest` resolves to
+**Image**: `generalsx/linux-builder:latest` (also `generalsx/linux-dev:latest` by convention -
+same image, two tags)
+**Purpose**: **the** Linux build image. Used by every `scripts/build/linux/docker-*.sh`, by
+`scripts/qa/smoke/docker-smoke-test-zh.sh`, and as the base image godmode layers agent tooling
+onto (`agent.base_dockerfile`, in the private `devmastersbv/godmode-env` overlay rather than
+this repository).
+**Base**: Ubuntu 24.04 (linux/amd64) - the series CI's `ubuntu-latest` resolved to on
+2026-08-20, and the one `.github/workflows/build-linux.yml` now names explicitly.
+**glibc floor of its output**: `GLIBC_2.38`, measured with `objdump -T` on a `linux64-deploy`
+build (see [glibc baseline](#glibc-baseline) below).
 
 **Includes**:
 - GCC + Clang, Ninja, CMake 3.31.6 (pinned; the repo floor is 3.25)
-- vcpkg **baked into the image**, pinned to the commit `build-linux.yml` checks out, with a
-  prewarmed binary cache
+- vcpkg **baked into the image at `/opt/vcpkg-dist`**, pinned to the commit `build-linux.yml`
+  checks out, with a prewarmed binary cache
 - clang-tidy, gdb, ccache, git-lfs, p7zip-full, mesa-vulkan-drivers (headless replay)
-- The full `build-linux.yml` package list, including `libvulkan-dev` (which
-  `Dockerfile.linux` omits)
+- The full `build-linux.yml` package list, including `libvulkan-dev`
 
 **Build** (from the repository **root** - the build context is the repository root, which is
 what the root `.dockerignore` trims):
 ```bash
 docker build --platform linux/amd64 \
     -f resources/dockerbuild/Dockerfile.dev \
-    -t generalsx/linux-dev:latest .
+    -t generalsx/linux-builder:latest .
+# or, equivalently:
+./scripts/env/docker/docker-build-images.sh linux
 ```
 
 **Use** (the checkout is bind-mounted; `/work` is not optional - the build scripts discard
 `build/<preset>` when its CMake cache was generated anywhere else):
 ```bash
-docker run --rm -v "$PWD:/work" -w /work generalsx/linux-dev:latest \
+docker run --rm -v "$PWD:/work" -w /work generalsx/linux-builder:latest \
     bash -lc 'cmake --preset linux64-deploy && cmake --build build/linux64-deploy --target z_generals'
 ```
 
@@ -40,34 +46,51 @@ which is not committed here - it lives in the private `devmastersbv/godmode-env`
 `julianrutten/GeneralsX/godmode.yaml` - and layers its agent tooling on top.
 
 See [docs/WORKDIR/support/DEV_CONTAINER.md](../../docs/WORKDIR/support/DEV_CONTAINER.md) for
-the dependency analysis behind this image, how it differs from `Dockerfile.linux`, the godmode
-wiring, and the full build-and-verify sequence (including how to keep the vcpkg binary cache
-and ccache across containers, which the deleted Compose file used to do with named volumes).
+the dependency analysis behind this image, the godmode wiring, and the full
+build-and-verify sequence (including how to keep the vcpkg binary cache and ccache across
+containers, which the deleted Compose file used to do with named volumes).
 
-> **Note**: parts of the rest of this README are stale. `Dockerfile.linux` is currently
-> `ubuntu:26.04`, not Ubuntu 22.04, and ships neither Clang nor a pinned CMake. The
-> `scripts/docker-vcpkg-init.sh` referenced below does not exist in this repository.
+#### vcpkg: `/opt/vcpkg-dist` vs `/opt/vcpkg`
 
+The image bakes a pinned vcpkg at **`/opt/vcpkg-dist`** and sets `VCPKG_ROOT` to it, so a bare
+`docker run` needs no host-side setup.
 
-### `Dockerfile.linux`
-**Image**: `generalsx/linux-builder:latest`  
-**Purpose**: Linux native ELF builds (GeneralsX, GeneralsXZH)  
-**Base**: Ubuntu 22.04 (linux/amd64)  
-**Size**: ~90MB (vcpkg is mounted as volume, not included)
+`/opt/vcpkg` is left empty on purpose: it is where the build scripts bind-mount
+`${VCPKG_DIR:-$HOME/.generalsx/vcpkg}`, and a bind mount hides whatever the image had at that
+path. On first run those scripts copy `/opt/vcpkg-dist` into the (host-owned, writable) mount
+and set `VCPKG_ROOT=/opt/vcpkg`. Two consequences worth knowing:
 
-**Includes**:
-- GCC, Clang, Ninja, Git
-- CMake 3.25.0
-- Python3 + pip
-- pkg-config, curl, zip, unzip
+- your `~/.generalsx/vcpkg` is now pinned to the same commit CI uses, instead of whatever
+  `git clone` produced on the day you first built;
+- to pick up a newer pin after rebuilding the image, delete `~/.generalsx/vcpkg` and let the
+  next build re-seed it.
 
-**Note**: vcpkg is mounted from `~/.generalsx/vcpkg` at runtime (auto-initialized on first run)
+#### glibc baseline
 
-**Build**:
+glibc symbol versioning is forward-only: a binary that references `GLIBC_x.y` starts on
+glibc >= x.y and nowhere else. **The `FROM` line in `Dockerfile.dev` is therefore the oldest
+distribution a locally built GeneralsX will run on.** Measured floors:
+
+| Build path | Base | Base glibc | Floor emitted |
+|---|---|---|---|
+| `Dockerfile.dev` (this image) | `ubuntu:24.04` | 2.39 | **`GLIBC_2.38`** |
+| `Dockerfile.linux` (deleted 20/08/2026) | `ubuntu:26.04` | 2.43 | `GLIBC_2.43` |
+| `.github/workflows/build-linux.yml` | `ubuntu-24.04` | 2.39 | `GLIBC_2.38`, enforced by the *Verify glibc Baseline* step |
+| Flatpak (what the releases ship) | `org.freedesktop.Sdk//25.08` | 2.42, **bundled in the runtime** | host glibc irrelevant |
+
+The `ubuntu:26.04` row is why `Dockerfile.linux` is gone: it made the documented local build
+path emit binaries that only start on Ubuntu 26.04 and later.
+
+To check any binary yourself:
+
 ```bash
-docker build -t generalsx/linux-builder:latest -f Dockerfile.linux .
-# Or use: ./scripts/docker-build-images.sh linux
+objdump -T build/linux64-deploy/Generals/GeneralsX | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail
+# or, over a whole deployed tree:
+./scripts/build/linux/check-glibc-baseline.sh --dir ~/GeneralsX/Generals
 ```
+
+> **Note**: parts of the rest of this README are stale - `scripts/docker-vcpkg-init.sh`, which
+> some sections tell you to run, does not exist in this repository.
 
 ### `Dockerfile.mingw`
 **Image**: `generalsx/mingw-builder:latest`  
@@ -89,51 +112,33 @@ docker build -t generalsx/mingw-builder:latest -f Dockerfile.mingw .
 # Or use: ./scripts/docker-build-images.sh mingw
 ```
 
-## UFirst-Time Setup
+## First-Time Setup
 
-vcpkg is stored locally at `~/.generalsx/vcpkg` and mounted into containers:
+None. The image bakes a pinned vcpkg, so `./scripts/build/linux/docker-build-linux-zh.sh`
+works on a machine that has never built this project. (There used to be a
+`scripts/docker-vcpkg-init.sh` step here; that file does not exist in this repository.)
 
+`~/.generalsx/vcpkg` is still bind-mounted at `/opt/vcpkg`, and the build scripts seed it from
+the image's `/opt/vcpkg-dist` on first use, so it holds the same vcpkg commit CI does. It
+persists vcpkg's package cache between builds.
+
+**vcpkg location**
+
+Default `~/.generalsx/vcpkg`; override with `VCPKG_DIR`:
 ```bash
-# Option 1: Automatic (recommended)
-# Build scripts auto-initialize vcpkg on first run
-./scripts/docker-build-linux-zh.sh  # Will run docker-vcpkg-init.sh if needed
-
-# Option 2: Manual (if you want to set up ahead of time)
-./scripts/docker-vcpkg-init.sh  # One-time, ~2-5 minutes
-```
-
-**What happens**:
-- vcpkg is cloned to `~/.generalsx/vcpkg` (full clone for baseline commits)
-- Bootstrap script runs (compiles vcpkg binary)
-- Subsequent builds mount this directory as volume at `/opt/vcpkg` in container
-
-**Benefits**:
-- ✅ Image stays small (~90MB vs ~328MB)
-- ✅ vcpkg shared across all builds (no duplication)
-- ✅ Easy to update: `cd ~/.generalsx/vcpkg && git pull && ./bootstrap-vcpkg.sh`
-- ✅ vcpkg Location
-
-Default location: `~/.generalsx/vcpkg`
-
-To change:
-```bash
-# Edit scripts to use different path
 export VCPKG_DIR="/custom/path/to/vcpkg"
 ```
 
 ### Updating vcpkg
 
+The pin lives in `ARG VCPKG_COMMIT` in `Dockerfile.dev` and in the "Bootstrap vcpkg" step of
+`.github/workflows/build-linux.yml`; change both together, then:
 ```bash
-cd ~/.generalsx/vcpkg
-git pull
-./bootstrap-vcpkg.sh -disableMetrics
+./scripts/env/docker/docker-build-images.sh linux   # rebuild the image
+rm -rf ~/.generalsx/vcpkg                           # drop the old seed
 ```
-
-Or re-run init script:
-```bash
-rm -rf ~/.generalsx/vcpkg
-./scripts/docker-vcpkg-init.sh
-```
+The next build re-seeds from the image. Running `git pull` inside `~/.generalsx/vcpkg`
+instead will silently put you back on an unpinned vcpkg - that drift is what the pin is for.
 
 ### Persists vcpkg package cache between builds
 
