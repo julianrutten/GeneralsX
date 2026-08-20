@@ -21,6 +21,39 @@ cd GeneralsX
 
 ---
 
+## 📌 Which machines will run what you build
+
+A native Linux build links against the build environment's glibc, and glibc symbol versioning
+is **forward-only**: a binary that references `GLIBC_x.y` starts on glibc `x.y` or newer and on
+nothing older. When it does not match you get no diagnostic from the build or the deploy - only
+this, at launch:
+
+```
+GeneralsX: /lib/x86_64-linux-gnu/libm.so.6: version `GLIBC_2.43' not found (required by .../GeneralsX)
+```
+
+The Docker builder image (`resources/dockerbuild/Dockerfile.dev`, `FROM ubuntu:24.04`) is the
+thing that decides this. Its measured floor is **`GLIBC_2.38`**, which covers Ubuntu 24.04 LTS
+and later, Debian 13+, Fedora 39+, RHEL 10+, and current rolling distributions. A build run
+directly on your own machine instead inherits *your* glibc, which is fine locally and not
+portable to anything older.
+
+Check any binary:
+
+```bash
+objdump -T build/linux64-deploy/GeneralsMD/GeneralsXZH | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1
+```
+
+`scripts/build/linux/deploy-linux.sh` and `deploy-linux-zh.sh` print this automatically and warn
+if the machine you are on is older than the binary needs.
+
+**To ship to users on older distributions, use the Flatpak**
+(`scripts/build/linux/build-linux-flatpak.sh`): it carries its own glibc inside
+`org.freedesktop.Platform//25.08`, so the host's version does not matter. That is what the
+GitHub releases ship.
+
+---
+
 ## 🔧 Technology Stack
 
 - **Graphics**: DXVK (DirectX 8 → Vulkan translation)
