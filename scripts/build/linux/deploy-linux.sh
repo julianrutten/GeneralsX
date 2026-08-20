@@ -233,6 +233,10 @@ echo "   MoltenVK:   n/a on Linux"
 echo "   VK ICD:     system JSONs (/usr/share/vulkan/icd.d or /etc/vulkan/icd.d)"
 echo "   DXVK conf:  not deployed (DXVK defaults/environment)"
 echo "   Wrapper:    ${RUNTIME_DIR}/run.sh"
+# GeneralsX @bugfix Claude 20/08/2026 Say out loud which glibc the deployed tree needs.
+# A successful build + successful deploy still produces a binary that cannot exec if the
+# builder image is newer than this machine, and the only clue is a linker error at launch.
+"${SCRIPT_DIR}/check-glibc-baseline.sh" --dir "${RUNTIME_DIR}" || true
 echo ""
 # GeneralsX @tweak BenderAI 28/04/2026 Keep Linux deploy run instructions aligned across Generals and Zero Hour scripts.
 echo "Run with:"
