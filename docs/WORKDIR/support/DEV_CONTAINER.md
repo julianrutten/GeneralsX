@@ -194,13 +194,32 @@ symbol first versioned in 2.39; the newest actually referenced are 2.38's
 `__isoc23_strtol`/`__isoc23_sscanf` family (GCC 13 emits the C23 variants), `wcslcpy`, and the
 re-versioned `fmod`/`fmodf`.
 
-**The released binaries were never affected.** `release.yml`'s Linux assets are `.flatpak`
-bundles from `build-linux-flatpak.yml`, which builds inside `org.freedesktop.Sdk//25.08` and
-runs against `org.freedesktop.Platform//25.08` - a runtime that carries its own glibc (2.42,
-per `elements/bootstrap/include/glibc-source.yml` at tag `freedesktop-sdk-25.08.16`) and is
-shipped inside the bundle. The host's glibc never enters into it. `ci.yml` only exercises the
-Flatpak path too, which is precisely why nothing caught this: the broken image was on a path
-CI does not run.
+**The released binaries were never affected - measured, not inferred.**
+
+`release.yml`'s Linux assets are `.flatpak` bundles from `build-linux-flatpak.yml`, which
+builds inside `org.freedesktop.Sdk//25.08` and runs against `org.freedesktop.Platform//25.08`.
+A Flatpak runtime carries its own glibc - 2.42, per `elements/bootstrap/include/glibc-source.yml`
+at tag `freedesktop-sdk-25.08.16` - and is shipped inside the bundle, so the host's glibc never
+enters into it.
+
+Checked against the actual published artifact rather than left as an argument. Decompressing
+the static-delta payload of `GeneralsX-linux.flatpak` from `GeneralsX-Beta-16` (published
+2026-08-12) and running `objdump -T` over every ELF inside it:
+
+| Object in the bundle | Floor |
+|---|---|
+| the game binary (11 MB PIE, RPATH `/run/build/generalsx/...`) | `GLIBC_2.38` |
+| `libSDL3.so.0` | `GLIBC_2.38` |
+| `libgamespy.so` | `GLIBC_2.38` |
+| `libsage_patch.so` | `GLIBC_2.34` |
+| `libdxvk_d3d9.so.0` | `GLIBC_2.27` |
+| `libdxvk_d3d8.so.0`, `libSDL3_image.so.0` | `GLIBC_2.14` |
+
+Nothing above 2.38, against a runtime that provides 2.42. The bundle's own metadata header
+says `runtime=org.freedesktop.Platform/x86_64/25.08`.
+
+`ci.yml` only exercises the Flatpak path too, which is precisely why nothing caught the broken
+image: it was on a path CI does not run.
 
 **AppImage is affected in principle.** `scripts/build/linux/build-linux-appimage-*.sh`
 explicitly skip `libc.so.*`, `libm.so.*` and `ld-linux*` when bundling, so an AppImage
