@@ -463,7 +463,11 @@ void LanLobbyMenuInit( WindowLayout *layout, void *userData )
 		}
 
 		IPSource = L"Enumerated LAN IP fallback";
-		IP = IPlist->getIP();
+		// GeneralsX @bugfix Claude 19/08/2026 Was IPlist->getIP(), the numerically lowest address,
+		// which on a box with a container bridge or a second network is not the one that reaches
+		// the LAN - and this address is also what a host advertises as slot 0 (issue #86).
+		// SelectLANLocalAddress also copes with an empty list, which this code dereferenced.
+		IP = SelectLANLocalAddress(IPlist, 0);
 		// GeneralsX @build GitHubCopilot 11/04/2026 Log auto-selected LAN IP to diagnose cross-platform discovery failures.
 		/* 		fprintf(stderr, "[LAN86] LanLobbyMenuInit - auto-selected LAN IP %d.%d.%d.%d from enumeration\n",
 			PRINTF_IP_AS_4_INTS(IP));

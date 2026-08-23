@@ -36,6 +36,51 @@ Bool CommandRequiresDirectSend(NetCommandMsg *msg);
 Bool IsCommandSynchronized(NetCommandType type);
 const char* GetNetCommandTypeAsString(NetCommandType type);
 
+// GeneralsX @bugfix Claude 19/08/2026 Shared, testable helpers for LAN lobby address handling (issue #86).
+
+/// The most local IPv4 interfaces the LAN lobby will look at in one pass.
+static const Int MAX_LAN_LOCAL_INTERFACES = 32;
+
+/**
+ * One local IPv4 interface, as the LAN lobby cares about it.
+ * All addresses are in host byte order, matching the rest of the LAN code.
+ */
+struct LANLocalInterface
+{
+	UnsignedInt address;			///< the interface's own address
+	UnsignedInt broadcast;			///< its broadcast address, or 0 if it has none
+	Bool				canBroadcast;		///< up, not loopback, not point-to-point, and broadcast capable
+};
+
+/**
+ * Collect the destinations a LAN discovery/announce packet has to be sent to so
+ * that every broadcast domain this machine sits on hears it.
+ *
+ * Passing an empty interface list (which is what the Windows path does, since it
+ * has no getifaddrs) yields exactly INADDR_BROADCAST, i.e. the retail behaviour.
+ *
+ * @return the number of addresses written to outAddrs; never 0, never writes 0.
+ */
+Int LANSelectBroadcastDestinations( const LANLocalInterface *ifaces, Int ifaceCount,
+																		UnsignedInt *outAddrs, Int maxAddrs );
+
+/**
+ * TRUE when addr is an address of this machine. selectedLocalIP is the address
+ * LANAPI is currently calling its own; it is always treated as local, so an
+ * empty interface list degrades to the plain equality test.
+ */
+Bool LANIsLocalAddress( const LANLocalInterface *ifaces, Int ifaceCount,
+												UnsignedInt selectedLocalIP, UnsignedInt addr );
+
+/**
+ * Ask the routing table which local address this machine would send from when
+ * talking to peerIP. Opens a UDP socket and connects it, which transmits
+ * nothing, then reads the address the kernel bound.
+ *
+ * @return the local address in host byte order, or 0 if it could not be determined.
+ */
+UnsignedInt GetLocalAddressForPeer( UnsignedInt peerIP );
+
 #ifdef DEBUG_LOGGING
 extern "C" {
 void dumpBufferToLog(const void *vBuf, Int len, const char *fname, Int line);

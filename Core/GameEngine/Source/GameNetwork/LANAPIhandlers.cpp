@@ -44,34 +44,45 @@
 // These functions handle conversion between WideChar (wchar_t) and WideCharWindows (uint16_t)
 // Required because wchar_t size varies (2 bytes Windows, 4 bytes Linux) but network protocol needs fixed size
 
+// GeneralsX @bugfix Claude 19/08/2026 Stop at the source terminator.
+// Callers pass the capacity of the destination field, not the length of the string, so copying a
+// fixed len ran off the end of the source: a two-character chat message was read as a hundred
+// wide characters. Confirmed under AddressSanitizer as a heap-buffer-overflow read, and it also
+// put up to 200 bytes of adjacent heap into every outgoing LAN packet.
+// len is the number of characters the destination can hold excluding its terminator.
 void CopyWcharToWindowsWideChar( WideCharWindows *dest, const WideChar *src, UnsignedInt len )
 {
-	for (UnsignedInt i = 0; i < len; ++i)
+	UnsignedInt i = 0;
+	if (src != nullptr)
 	{
-		dest[i] = src[i];
+		while (i < len && src[i] != 0)
+		{
+			dest[i] = (WideCharWindows)src[i];
+			++i;
+		}
 	}
-	dest[len] = 0;
+	dest[i] = 0;
 }
 
+// GeneralsX @bugfix Claude 19/08/2026 Bound the scan and never return null.
+// The length scan had no upper bound, so a field that arrived without a terminator walked off the
+// end of the packet, and the "too long" test used > rather than >=, which wrote one past the end
+// of buf at exactly MAX_COMPUTERNAME_LENGTH. Returning null was worse still: no caller checks, and
+// ContainsInvalidChars() would dereference it. Truncate instead - the result is only ever used as
+// a display name or compared against one.
 wchar_t *GetWindowsWideCharAsWchar( WideCharWindows *src )
 {
 	static wchar_t buf[MAX_COMPUTERNAME_LENGTH];
-	// Get the length of the string
+	static const UnsignedInt maxLen = ARRAY_SIZE(buf) - 1;
+
 	UnsignedInt len = 0;
-	while (src[len] != 0)
+	if (src != nullptr)
 	{
-		++len;
-	}
-
-	if (len > MAX_COMPUTERNAME_LENGTH)
-	{
-		return NULL; // too long
-	}
-
-	// Copy the string
-	for (UnsignedInt i = 0; i < len; ++i)
-	{
-		buf[i] = src[i];
+		while (len < maxLen && src[len] != 0)
+		{
+			buf[len] = (wchar_t)src[len];
+			++len;
+		}
 	}
 	buf[len] = 0;
 	return buf;
@@ -83,7 +94,7 @@ void LANAPI::handleRequestLocations( LANMessage *msg, UnsignedInt senderIP )
 		PRINTF_IP_AS_4_INTS(senderIP), m_inLobby, (m_currentGame != nullptr)); */
 	if (m_inLobby)
 	{
-		LANMessage reply;
+		LANMessage reply = {};
 		fillInLANMessage( &reply );
 		reply.messageType = LANMessage::MSG_LOBBY_ANNOUNCE;
 
@@ -97,7 +108,7 @@ void LANAPI::handleRequestLocations( LANMessage *msg, UnsignedInt senderIP )
 		{
 			if (m_currentGame->getIP(0) == m_localIP)
 			{
-				LANMessage reply;
+				LANMessage reply = {};
 				fillInLANMessage( &reply );
 				reply.messageType = LANMessage::MSG_GAME_ANNOUNCE;
 				AsciiString gameOpts = GenerateGameOptionsString();
@@ -198,6 +209,10 @@ void LANAPI::handleGameAnnounce( LANMessage *msg, UnsignedInt senderIP )
 		if (!success)
 		{
 			// remove from list
+			// The usual cause is a map this machine cannot resolve; see
+			// ParseAsciiStringToGameInfo. The game silently never appears in the lobby list.
+			DEBUG_LOG(("LANAPI::handleGameAnnounce - dropping the game announced by %d.%d.%d.%d; its options string did not parse",
+				PRINTF_IP_AS_4_INTS(senderIP)));
 			removeGame(game);
 			delete game;
 			game = nullptr;
@@ -252,7 +267,7 @@ void LANAPI::handleRequestGameInfo( LANMessage *msg, UnsignedInt senderIP )
 	{
 		if (m_currentGame->getIP(0) == m_localIP || (m_currentGame->isGameInProgress() && TheNetwork && TheNetwork->isPacketRouter())) // if we're in game we should reply if we're the packet router
 		{
-			LANMessage reply;
+			LANMessage reply = {};
 			fillInLANMessage( &reply );
 			reply.messageType = LANMessage::MSG_GAME_ANNOUNCE;
 
@@ -322,13 +337,20 @@ void LANAPI::handleRequestJoin( LANMessage *msg, UnsignedInt senderIP )
 		PRINTF_IP_AS_4_INTS(senderIP), PRINTF_IP_AS_4_INTS(msg->GameToJoin.gameIP), PRINTF_IP_AS_4_INTS(m_localIP),
 		m_pendingAction, m_inLobby); */
 
-	if (msg->GameToJoin.gameIP != m_localIP)
+	// GeneralsX @bugfix Claude 19/08/2026 The joiner echoes back the slot 0 address it read out of
+	// our announce. That is whichever of our addresses we were calling our own when we announced,
+	// and it can differ from the one we are using now - the lobby rebinds and re-picks on the way
+	// in and out of the direct-connect screen. Accept the request as long as it names an address
+	// of this machine, rather than only the currently selected one (issue #86).
+	if (!isLocalAddress(msg->GameToJoin.gameIP))
 	{
+		DEBUG_LOG(("LANAPI::handleRequestJoin - ignoring request from %d.%d.%d.%d for game at %d.%d.%d.%d; not one of our addresses",
+			PRINTF_IP_AS_4_INTS(senderIP), PRINTF_IP_AS_4_INTS(msg->GameToJoin.gameIP)));
 		/* 		fprintf(stderr, "[LAN86] handleRequestJoin ignored sender=%d.%d.%d.%d reason=wrong-game-ip\n",
 			PRINTF_IP_AS_4_INTS(senderIP)); */
 		return; // Not us.  Ignore it.
 	}
-	LANMessage reply;
+	LANMessage reply = {};
 	fillInLANMessage( &reply );
 	if (!m_inLobby && m_currentGame && m_currentGame->getIP(0) == m_localIP)
 	{
@@ -510,13 +532,46 @@ void LANAPI::handleRequestJoin( LANMessage *msg, UnsignedInt senderIP )
 	RequestGameOptions(GenerateGameOptionsString(), true);
 }
 
+// GeneralsX @bugfix Claude 19/08/2026 Decide whether a join accept/deny is meant for us (#86).
+//
+// GameJoined.playerIP is the source address the host observed for our join request. m_localIP is
+// whatever the lobby UI picked out of our own interface list. On a machine with more than one
+// address those are two independent quantities, and the old test - plain equality - silently
+// dropped a perfectly good reply, which is exactly the reported symptom: the host lists the
+// joining player while the joiner times out five seconds later with nothing logged.
+//
+// Accept the reply when it names any address of this machine and we are in fact waiting on a join,
+// then move m_localIP to the address the host saw, because that is the one that demonstrably
+// carries traffic between the two of us. Everything downstream - our slot IP, getLocalSlotNum(),
+// the in-game connection - is keyed off m_localIP and has to agree with the host's view.
+Bool LANAPI::isJoinReplyForUs( UnsignedInt replyPlayerIP )
+{
+	if (replyPlayerIP == m_localIP)
+	{
+		return TRUE;
+	}
+
+	if (m_pendingAction != ACT_JOIN || !isLocalAddress(replyPlayerIP))
+	{
+		DEBUG_LOG(("LANAPI::isJoinReplyForUs - dropping a join reply addressed to %d.%d.%d.%d; we are %d.%d.%d.%d and pendingAction is %d",
+			PRINTF_IP_AS_4_INTS(replyPlayerIP), PRINTF_IP_AS_4_INTS(m_localIP), m_pendingAction));
+		return FALSE;
+	}
+
+	DEBUG_LOG(("LANAPI::isJoinReplyForUs - host saw us as %d.%d.%d.%d, we were using %d.%d.%d.%d; adopting theirs",
+		PRINTF_IP_AS_4_INTS(replyPlayerIP), PRINTF_IP_AS_4_INTS(m_localIP)));
+
+	applyLocalIP(replyPlayerIP);
+	return TRUE;
+}
+
 void LANAPI::handleJoinAccept( LANMessage *msg, UnsignedInt senderIP )
 {
 	// GeneralsX @build GitHubCopilot 12/04/2026 Trace directed join-accept processing and pending action transitions for LAN/direct-connect debugging.
 	/* 	fprintf(stderr, "[LAN86] handleJoinAccept sender=%d.%d.%d.%d playerIP=%d.%d.%d.%d localIP=%d.%d.%d.%d pending=%d slot=%d game=%ls\n",
 		PRINTF_IP_AS_4_INTS(senderIP), PRINTF_IP_AS_4_INTS(msg->GameJoined.playerIP), PRINTF_IP_AS_4_INTS(m_localIP),
 		m_pendingAction, msg->GameJoined.slotPosition, GetWindowsWideCharAsWchar(msg->GameJoined.gameName)); */
-	if (msg->GameJoined.playerIP == m_localIP) // Is it for us?
+	if (isJoinReplyForUs(msg->GameJoined.playerIP)) // Is it for us?
 	{
 		if (m_pendingAction == ACT_JOIN) // Are we trying to join?
 		{
@@ -575,7 +630,7 @@ void LANAPI::handleJoinDeny( LANMessage *msg, UnsignedInt senderIP )
 	/* 	fprintf(stderr, "[LAN86] handleJoinDeny sender=%d.%d.%d.%d playerIP=%d.%d.%d.%d localIP=%d.%d.%d.%d pending=%d reason=%d game=%ls\n",
 		PRINTF_IP_AS_4_INTS(senderIP), PRINTF_IP_AS_4_INTS(msg->GameJoined.playerIP), PRINTF_IP_AS_4_INTS(m_localIP),
 		m_pendingAction, msg->GameNotJoined.reason, GetWindowsWideCharAsWchar(msg->GameNotJoined.gameName)); */
-	if (msg->GameJoined.playerIP == m_localIP) // Is it for us?
+	if (isJoinReplyForUs(msg->GameJoined.playerIP)) // Is it for us?
 	{
 		if (m_pendingAction == ACT_JOIN) // Are we trying to join?
 		{
