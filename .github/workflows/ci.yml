@@ -89,21 +89,10 @@ jobs:
       preset: macos-vulkan
     secrets: inherit
 
-  check-assets-key:
-    name: Check Assets Key
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    outputs:
-      available: ${{ steps.check.outputs.available }}
-    steps:
-      - name: Check ASSETS_KEY Availability
-        id: check
-        run: echo "available=${{ secrets.ASSETS_KEY != '' }}" >> "$GITHUB_OUTPUT"
-
   replay-test-linux:
     name: Replay Tests (linux)
-    needs: [build-linux-flatpak, check-assets-key]
-    if: needs.build-linux-flatpak.result == 'success' && needs.check-assets-key.outputs.available == 'true'
+    needs: [build-linux-flatpak]
+    if: needs.build-linux-flatpak.result == 'success'
     uses: ./.github/workflows/replay-tests.yml
     with:
       platform: linux-flatpak
@@ -113,8 +102,8 @@ jobs:
 
   replay-test-macos:
     name: Replay Tests (macos)
-    needs: [build-macos, check-assets-key]
-    if: needs.build-macos.result == 'success' && needs.check-assets-key.outputs.available == 'true'
+    needs: [build-macos]
+    if: needs.build-macos.result == 'success'
     uses: ./.github/workflows/replay-tests.yml
     with:
       platform: macos
