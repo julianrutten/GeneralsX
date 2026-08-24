@@ -60,16 +60,30 @@ docker run --rm \
         fi
         echo \"🛠  Using \$PROC parallel jobs for building...\"
         
-        # Bootstrap vcpkg in Docker volume if not exists
-        if [ ! -f /opt/vcpkg/vcpkg ]; then
-            echo '📦 Bootstrapping vcpkg (first time, will be cached in Docker volume)...'
-            # Clean up if directory exists but is incomplete
-            if [ -d /opt/vcpkg ]; then
-                echo '🧹 Cleaning incomplete vcpkg directory...'
-                rm -rf /opt/vcpkg/* /opt/vcpkg/.git 2>/dev/null || true
+        # GeneralsX @bugfix Claude 20/08/2026 Seed the mounted vcpkg from the image's
+        # pinned copy instead of cloning an arbitrary vcpkg HEAD.
+        #
+        # \$VCPKG_DIR is still bind-mounted on /opt/vcpkg exactly as before, and it is
+        # still host-owned so the --user uid can write it. What changed is where its
+        # contents come from: /opt/vcpkg-dist inside the image, checked out at commit
+        # ffc071e0c08432c60c9b64f00334c0227667931b - the same commit
+        # .github/workflows/build-linux.yml bootstraps. The old 'git clone' with no
+        # checkout meant every developer built against whatever vcpkg HEAD was that day,
+        # which is the same class of drift as the two build images disagreeing on Ubuntu.
+        #
+        # cp -a as an unprivileged uid produces caller-owned files, so the seeded .git is
+        # not 'dubious ownership' to git and the tree is writable for vcpkg's buildtrees.
+        # Delete \$VCPKG_DIR to re-seed after the image is rebuilt with a newer pin.
+        if [ ! -x /opt/vcpkg/vcpkg ]; then
+            if [ ! -x /opt/vcpkg-dist/vcpkg ]; then
+                echo 'ERROR: image has no baked vcpkg at /opt/vcpkg-dist.' >&2
+                echo 'Rebuild it: ./scripts/env/docker/docker-build-images.sh linux' >&2
+                exit 1
             fi
-            git clone https://github.com/microsoft/vcpkg.git /opt/vcpkg
-            /opt/vcpkg/bootstrap-vcpkg.sh -disableMetrics
+            echo '📦 Seeding vcpkg from the image (first run for this VCPKG_DIR)...'
+            # Clean up if directory exists but is incomplete
+            rm -rf /opt/vcpkg/* /opt/vcpkg/.git 2>/dev/null || true
+            cp -a /opt/vcpkg-dist/. /opt/vcpkg/
         fi
         
         export VCPKG_ROOT=/opt/vcpkg

@@ -10,10 +10,10 @@
 # `*` also excludes `.git`, which is wanted twice over: the image needs no history, and in a
 # godmode worktree `.git` is a file pointing at a directory outside the context anyway.
 #
-# This only affects builds whose context is the repository root. The older images
-# (Dockerfile.linux, Dockerfile.mingw, Dockerfile) are built by
-# scripts/env/docker/docker-build-images.sh with resources/dockerbuild/ as their context
-# and are unaffected.
+# GeneralsX @bugfix Claude 20/08/2026 scripts/env/docker/docker-build-images.sh now builds
+# the Linux image from Dockerfile.dev with the repository root as its context too, so this
+# file governs that build as well. The remaining images (Dockerfile.mingw, Dockerfile) still
+# use resources/dockerbuild/ as their context and are unaffected.
 *
 !vcpkg.json
 !vcpkg-lock.json

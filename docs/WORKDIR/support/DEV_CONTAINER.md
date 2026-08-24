@@ -120,37 +120,125 @@ takes its package list from there, verbatim.
 
 ## 2. How this relates to the existing `resources/dockerbuild/` images
 
-The repository already ships container tooling. Nothing here replaces it; the new image is a
-corrected and consolidated Linux one that sits alongside.
+**Update 20/08/2026: `Dockerfile.linux` is deleted.** It sat alongside `Dockerfile.dev` for
+one day and that was one day too many - see section 2b. `generalsx/linux-builder:latest` is
+now built from `Dockerfile.dev`, and there is one Linux build image.
 
 | File | What it is | Verdict |
 |---|---|---|
 | `Dockerfile` | Debian 12 + Wine + Visual Studio 6 portable, driven by `entrypoint.sh`. The legacy VC6 32-bit path. | Untouched. Nothing to do with Linux. |
-| `Dockerfile.linux` | `generalsx/linux-builder:latest`, the current native Linux builder. | Superseded for dev/agent use; still what `scripts/build/linux/docker-*.sh` invoke. See drift below. |
+| `Dockerfile.linux` | was `generalsx/linux-builder:latest`, the native Linux builder. | **Deleted 20/08/2026.** Its tag now points at `Dockerfile.dev`. |
 | `Dockerfile.mingw` | `generalsx/mingw-builder:latest`, MinGW-w64 + wine64. | Untouched, and deliberately not folded in. |
-| `Dockerfile.dev` | **new** - `generalsx/linux-dev:latest`. | Native Linux dev + agent base. |
+| `Dockerfile.dev` | `generalsx/linux-builder:latest` - the one Linux build image, and godmode's agent base. | Native Linux build + dev + agent base. |
 
-### Where `Dockerfile.linux` has drifted from CI
+### Where `Dockerfile.linux` had drifted from CI
 
-- It pins `ubuntu:26.04`, a series newer than CI's `ubuntu-latest`. Its package list contains
-  the `libgles2-mesa-dev` / `libegl1-mesa-dev` transitional packages, which are exactly the
-  kind that get dropped between Ubuntu releases. `Dockerfile.dev` pins `ubuntu:24.04`.
+- It pinned `ubuntu:26.04`, a series newer than CI's `ubuntu-latest`. **This is the one that
+  reached a user.** See section 2b.
+- Its package list contains the `libgles2-mesa-dev` / `libegl1-mesa-dev` transitional
+  packages, which are exactly the kind that get dropped between Ubuntu releases.
+  `Dockerfile.dev` pins `ubuntu:24.04`.
 - It **omits `libvulkan-dev`**, which `build-linux.yml` installs. DXVK links against the
   Vulkan loader.
 - It ships no CMake pin - it takes whatever the base image has - and no `clang`, despite
   `README.md` and `DOCKER_WORKFLOW.md` both claiming the image contains "GCC, Clang" and
   "CMake 3.25.0" on "Ubuntu 22.04". All three statements are wrong about the current file.
-- Its vcpkg story does not work off the original developer's machine. The image has no
+- Its vcpkg story did not work off the original developer's machine. The image had no
   vcpkg; `docker-configure-linux.sh` and `docker-build-linux-*.sh` bind-mount
-  `~/.generalsx/vcpkg` into `/opt/vcpkg` and clone into it on first run. Two problems:
-  1. that clone is **unpinned** - a bare `git clone https://github.com/microsoft/vcpkg.git`
+  `~/.generalsx/vcpkg` into `/opt/vcpkg` and used to clone into it on first run. Two problems:
+  1. that clone was **unpinned** - a bare `git clone https://github.com/microsoft/vcpkg.git`
      with no `checkout`, where CI pins commit `ffc071e0c08432c60c9b64f00334c0227667931b`;
   2. `~/.generalsx/vcpkg` does not exist on a CI or godmode host, and the setup script the
      docs tell you to run for it - `scripts/docker-vcpkg-init.sh`, named in both
      `DOCKER_WORKFLOW.md` and `resources/dockerbuild/README.md` - **is not in the
      repository**.
+
+  Both are fixed: the scripts now seed that mount from the image's pinned `/opt/vcpkg-dist`.
+  See "The `/opt/vcpkg` mount conflict" below - it is the one place merging the two images
+  actually collided.
 - `resources/dockerbuild/README.md` is itself partly corrupted: several sections are
   duplicated and one code fence is spliced mid-sentence ("```bash in Dockerfiles:").
+
+---
+
+## 2b. The `ubuntu:26.04` base was not cosmetic: it shipped unstartable binaries
+
+Reported from a desktop on 20/08/2026, after `./scripts/build/linux/run-linux.sh -win`:
+
+```
+/home/.../GeneralsX: /lib/x86_64-linux-gnu/libm.so.6: version `GLIBC_2.43' not found (required by .../GeneralsX)
+/home/.../GeneralsX: /lib/x86_64-linux-gnu/libm.so.6: version `GLIBC_2.43' not found (required by .../libSDL3.so.0)
+```
+
+The build succeeded. The deploy succeeded. The binary could not `exec`.
+
+glibc symbol versioning is forward-only: a binary that references `GLIBC_x.y` runs on
+glibc >= x.y and on nothing older. So **the `FROM` line of the build image is the oldest
+distribution the resulting binary will start on** - and `Dockerfile.linux` was
+`ubuntu:26.04`, whose glibc is 2.43 (Launchpad, resolute: `2.43-2ubuntu2`). Every
+`docker-build-linux-*.sh` used that image, so the build path the repository documents as
+recommended produced binaries that only ran on Ubuntu 26.04 and later, while
+`docs/HOWTO/INSTALLATION.md` presented 26.04 as a platform the project is *tested* on.
+
+Measured floors, `objdump -T <file> | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1`:
+
+| Path | Base | Base glibc | Floor |
+|---|---|---|---|
+| `Dockerfile.dev` | `ubuntu:24.04` | 2.39 | **2.38** (game binary and the `libSDL3.so.0` built beside it) |
+| `Dockerfile.linux` (deleted) | `ubuntu:26.04` | 2.43 | 2.43, per the report above |
+| `build-linux.yml` | `ubuntu-24.04` (was `ubuntu-latest`) | 2.39 | 2.38 |
+| Flatpak (`build-linux-flatpak.yml`, and what `release.yml` ships) | `org.freedesktop.Sdk//25.08` | 2.42, **inside the runtime** | host glibc irrelevant |
+
+The floor is 2.38 rather than the base's own 2.39 because nothing in the tree references a
+symbol first versioned in 2.39; the newest actually referenced are 2.38's
+`__isoc23_strtol`/`__isoc23_sscanf` family (GCC 13 emits the C23 variants), `wcslcpy`, and the
+re-versioned `fmod`/`fmodf`.
+
+**The released binaries were never affected - measured, not inferred.**
+
+`release.yml`'s Linux assets are `.flatpak` bundles from `build-linux-flatpak.yml`, which
+builds inside `org.freedesktop.Sdk//25.08` and runs against `org.freedesktop.Platform//25.08`.
+A Flatpak runtime carries its own glibc - 2.42, per `elements/bootstrap/include/glibc-source.yml`
+at tag `freedesktop-sdk-25.08.16` - and is shipped inside the bundle, so the host's glibc never
+enters into it.
+
+Checked against the actual published artifact rather than left as an argument. Decompressing
+the static-delta payload of `GeneralsX-linux.flatpak` from `GeneralsX-Beta-16` (published
+2026-08-12) and running `objdump -T` over every ELF inside it:
+
+| Object in the bundle | Floor |
+|---|---|
+| the game binary (11 MB PIE, RPATH `/run/build/generalsx/...`) | `GLIBC_2.38` |
+| `libSDL3.so.0` | `GLIBC_2.38` |
+| `libgamespy.so` | `GLIBC_2.38` |
+| `libsage_patch.so` | `GLIBC_2.34` |
+| `libdxvk_d3d9.so.0` | `GLIBC_2.27` |
+| `libdxvk_d3d8.so.0`, `libSDL3_image.so.0` | `GLIBC_2.14` |
+
+Nothing above 2.38, against a runtime that provides 2.42. The bundle's own metadata header
+says `runtime=org.freedesktop.Platform/x86_64/25.08`.
+
+`ci.yml` only exercises the Flatpak path too, which is precisely why nothing caught the broken
+image: it was on a path CI does not run.
+
+**AppImage is affected in principle.** `scripts/build/linux/build-linux-appimage-*.sh`
+explicitly skip `libc.so.*`, `libm.so.*` and `ld-linux*` when bundling, so an AppImage
+inherits its build host's floor exactly like a bare binary does. It is only produced by
+`build-linux.yml` with `package_format: appimage`, which is `workflow_dispatch`-only and not
+part of any release, so no shipped AppImage carries the 2.43 floor - but one built from the
+old Docker image would have. The same applies to that workflow's gzip bundle, which skips the
+same libraries.
+
+### Guards added
+
+- `build-linux.yml` names `ubuntu-24.04` instead of `ubuntu-latest`, so GitHub migrating that
+  label cannot raise the floor silently.
+- A *Verify glibc Baseline* step in the same workflow fails the build if the binary or any
+  co-built `.so` exceeds `GENERALSX_MAX_GLIBC` (2.38).
+- `scripts/build/linux/check-glibc-baseline.sh`, called from both `deploy-linux*.sh`, prints
+  the deployed tree's floor and warns when the local machine is older than it.
+
+---
 
 ### MinGW
 
@@ -163,8 +251,13 @@ target this container is not meant to build. Use the existing MinGW image for th
 
 ## 3. Design decisions in `Dockerfile.dev`
 
-**Base**: `ubuntu:24.04` - the LTS series `ubuntu-latest` resolves to, so the CI package
-names are known to resolve. Must stay glibc Debian/Ubuntu for godmode (below).
+**Base**: `ubuntu:24.04` - the LTS series `ubuntu-latest` resolved to on 20/08/2026 (verified
+against the `actions/runner-images` README; 26.04 was preview-only), so the CI package names
+are known to resolve, **and it is the ABI contract for every binary built here** (section 2b).
+Must stay glibc Debian/Ubuntu for godmode (below). Anything older than glibc 2.38 - Ubuntu
+22.04 LTS, Debian 12, RHEL 9 - is served by the Flatpak, not by lowering this base; lowering it
+would move the image off the series CI builds on, which is the drift this consolidation
+removes.
 
 **CMake**: pinned to **3.31.6** from Kitware, the same version `resources/dockerbuild/Dockerfile`
 already pins via `ARG CMAKE_VERSION`. Pinning removes base-image drift as a failure mode;
@@ -173,7 +266,7 @@ the floor is 3.25. Symlinked into `/usr/local/bin`.
 **vcpkg: baked, not mounted.** Pinned to CI's `ffc071e0...`, full clone (manifest mode has to
 resolve the `vcpkg.json` baseline, which is a different commit).
 
-| | Mounted (`Dockerfile.linux` today) | Baked (`Dockerfile.dev`) |
+| | Mounted (`Dockerfile.linux`, deleted) | Baked (`Dockerfile.dev`) |
 |---|---|---|
 | Image size | ~90 MB | ~600-800 MB larger |
 | First run on a fresh host | needs a host-side init that does not exist here | works immediately |
@@ -186,6 +279,42 @@ started from the image already has the compiled ports. What is not persisted is 
 compiled *after* a container starts - a `vcpkg.json` bump, say. Those are rebuilt in each new
 container until the image is rebuilt, and rebuilding is the designed path, because the
 manifest `COPY` invalidates the prewarm layer exactly when the manifest changes.
+
+**The `/opt/vcpkg` mount conflict.** Every `scripts/build/linux/docker-*.sh` runs
+`-v "${VCPKG_DIR:-$HOME/.generalsx/vcpkg}:/opt/vcpkg"`, and a bind mount hides whatever the
+image has underneath it. So the moment those scripts started using `Dockerfile.dev`, a baked
+clone at `/opt/vcpkg` would have been shadowed by an empty host directory - worse than before,
+and `/usr/local/bin/vcpkg` would have dangled inside the container too.
+
+Resolved by baking at **`/opt/vcpkg-dist`** (`ENV VCPKG_ROOT=/opt/vcpkg-dist`) and leaving
+`/opt/vcpkg` empty as the scripts' mount point. On first run the scripts `cp -a` the baked
+tree into the mount and set `VCPKG_ROOT=/opt/vcpkg`. Why this way round:
+
+- `/opt/vcpkg` is in the scripts' published contract and in the docs; `VCPKG_ROOT` is an
+  environment variable nothing else hardcodes. Move the cheaper one.
+- `cp -a` under `--user "$(id -u):$(id -g)"` produces caller-owned files, so the seeded `.git`
+  is not "dubious ownership" to git and vcpkg can write its `buildtrees`.
+- The developer's `~/.generalsx/vcpkg` ends up pinned to CI's commit, which the old unpinned
+  clone never was.
+- A bare `docker run` with no mount is unchanged: `VCPKG_ROOT` is `/opt/vcpkg-dist` and
+  everything works with zero host-side setup, which is what godmode needs.
+
+Cost: a one-time ~1 GB copy the first time a given `VCPKG_DIR` is used. Delete `VCPKG_DIR` to
+re-seed after the image is rebuilt with a newer pin.
+
+**Running as a non-root `--user`.** The build scripts always do, and `Dockerfile.dev` ships
+three things `Dockerfile.linux` never had, all of which are root-owned by default and all of
+which would have broken under `--user`:
+
+- `/ccache` - and unlike the old image this one actually installs `ccache`, which
+  `cmake/ccache.cmake` wires in automatically. ccache **fails the compile it is wrapping**
+  when it cannot create its cache directory. Now mode 1777.
+- `/opt/vcpkg-cache` and the subdirectories the prewarm creates in it - readable but not
+  writable, so a new port could never be cached. Now 1777 (directories only; the cached
+  payloads only need to be read).
+- git's `safe.directory` - vcpkg shells out to git inside `VCPKG_ROOT` to resolve
+  `vcpkg.json`'s `builtin-baseline`, and the bind-mounted `/work` hits the same rule from the
+  other direction when the agent runs as root. Set to `*`; these are build containers.
 
 **Layering.** No game source is ever `COPY`ed. The layers are: apt -> CMake -> vcpkg clone ->
 `COPY vcpkg.json vcpkg-lock.json triplets/` -> binary-cache prewarm. A `.cpp` edit touches
@@ -296,14 +425,14 @@ the same path godmode takes, plus a container to run the build in.
 #    --platform matters on an Apple Silicon host: the presets target x86_64 only.
 docker build --platform linux/amd64 \
     -f resources/dockerbuild/Dockerfile.dev \
-    -t generalsx/linux-dev:latest .
+    -t generalsx/linux-builder:latest .
 
 # 2. Did the prewarm succeed? Absence of the marker means yes.
-docker run --rm generalsx/linux-dev:latest \
+docker run --rm generalsx/linux-builder:latest \
     sh -c 'ls /opt/vcpkg-cache/PREWARM_FAILED 2>/dev/null && echo COLD_CACHE || echo PREWARM_OK'
 
 # 3. Toolchain sanity, and the godmode preconditions
-docker run --rm generalsx/linux-dev:latest \
+docker run --rm generalsx/linux-builder:latest \
     bash -lc 'cmake --version && ninja --version && gcc --version | head -1 \
               && clang-tidy --version | head -2 && vcpkg version | head -1 \
               && echo "VCPKG_ROOT=$VCPKG_ROOT" \
@@ -316,7 +445,7 @@ docker run -d --name generalsx-dev --platform linux/amd64 \
     -v "$PWD:/work" -w /work \
     -v generalsx-vcpkg-cache:/opt/vcpkg-cache \
     -v generalsx-ccache:/ccache \
-    generalsx/linux-dev:latest sleep infinity
+    generalsx/linux-builder:latest sleep infinity
 
 # 5. Configure (this is where vcpkg installs the manifest and DXVK/SDL3 are fetched)
 docker exec generalsx-dev bash -lc 'cmake --preset linux64-deploy'
@@ -330,6 +459,17 @@ docker exec generalsx-dev bash -lc '
     file build/linux64-deploy/GeneralsMD/GeneralsXZH
     file build/linux64-deploy/Generals/GeneralsX
     ls -lh build/linux64-deploy/GeneralsMD/GeneralsXZH build/linux64-deploy/Generals/GeneralsX'
+
+# 7b. The glibc floor of what was just built. This is the number that decides which
+#     machines the binaries will start on; it must not exceed GENERALSX_MAX_GLIBC in
+#     .github/workflows/build-linux.yml (2.38).
+docker exec generalsx-dev bash -lc '
+    for f in build/linux64-deploy/GeneralsMD/GeneralsXZH \
+             build/linux64-deploy/Generals/GeneralsX \
+             build/linux64-deploy/_deps/sdl3-build/libSDL3.so.0.*; do
+        printf "%-60s %s\n" "$f" \
+          "$(objdump -T "$f" | grep -o "GLIBC_[0-9.]*" | sort -uV | tail -1)"
+    done'
 
 # 8. Dev-environment checks: compile_commands.json and clang-tidy on one real file
 docker exec generalsx-dev bash -lc '
@@ -349,9 +489,9 @@ Two things to know about step 4:
 - The container runs as **root**, so files it writes into the bind-mounted checkout - the
   whole of `build/<preset>` - are root-owned on the host. The repository's own scripts avoid
   that by passing `--user "$(id -u):$(id -g)" -e HOME=/tmp/generalsx-home`; do the same if
-  that matters, but then also `chown` the two cache paths, because `/opt/vcpkg-cache` and
-  `/ccache` are root-owned in the image and ccache fails the compile it wraps when it cannot
-  write its cache directory.
+  that matters. The cache paths no longer need a `chown` to go with it - `/opt/vcpkg-cache`
+  and `/ccache` are mode 1777 in the image for exactly this reason (see "Running as a
+  non-root `--user`" above).
 - The headless replay environment is **not** baked into the image, on purpose: it would break
   an interactive `run-linux-zh.sh -win` on a machine that does have a display. Export it per
   run, exactly as `replay-tests.yml` does:

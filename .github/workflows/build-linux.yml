@@ -34,10 +34,26 @@ on:
           - appimage
         default: gzip
 
+env:
+  # GeneralsX @bugfix Claude 20/08/2026 The highest glibc symbol version the artifacts of
+  # this workflow are allowed to require. glibc symbol versioning is forward-only, so this
+  # is literally "the oldest distribution a player can run these binaries on". Measured on
+  # ubuntu-24.04: a linux64-deploy build of either game, and the libSDL3.so.0 built next to
+  # it, top out at GLIBC_2.38. Raising this number is a user-visible compatibility decision -
+  # keep it in step with the FROM line in resources/dockerbuild/Dockerfile.dev.
+  GENERALSX_MAX_GLIBC: "2.38"
+
 jobs:
   build-linux:
     name: ${{ matrix.game.id }}@${{ inputs.preset }}
-    runs-on: ubuntu-latest
+    # GeneralsX @bugfix Claude 20/08/2026 Pinned, not `ubuntu-latest`. This workflow's
+    # artifacts (the gzip bundle and the AppImage) deliberately exclude libc/libm/ld so they
+    # use the player's glibc, which makes the runner's glibc the ABI floor of everything it
+    # ships. `ubuntu-latest` resolved to Ubuntu 24.04 (glibc 2.39) when this was written and
+    # will migrate to 26.04 (glibc 2.43); letting that happen silently would reproduce
+    # exactly the bug that deleted resources/dockerbuild/Dockerfile.linux. Same base as
+    # resources/dockerbuild/Dockerfile.dev - keep the two in step.
+    runs-on: ubuntu-24.04
     timeout-minutes: 120
     strategy:
       fail-fast: false
@@ -75,7 +91,7 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          echo "Installing Linux build dependencies (matching Dockerfile.linux)..."
+          echo "Installing Linux build dependencies (matching Dockerfile.dev)..."
           sudo apt-get update -qq
           sudo apt-get install -y -qq --no-install-recommends \
             build-essential \
@@ -181,6 +197,56 @@ jobs:
             echo "❌ Binary NOT found: $BINARY"
             exit 1
           fi
+
+      # GeneralsX @bugfix Claude 20/08/2026 Fail the build when the artifacts would not start
+      # on a supported distribution, instead of finding out from a bug report. The bundle and
+      # the AppImage both skip libc/libm/ld on purpose, so the highest GLIBC_x.y symbol
+      # version referenced by the game binary and by every co-built .so it ships IS the
+      # minimum glibc a player needs. Checks the shared objects too: the failure that
+      # motivated this named libSDL3.so.0 as well as the executable.
+      - name: Verify glibc Baseline
+        run: |
+          set -o pipefail
+          BUILD_DIR="build/${{ inputs.preset }}"
+          MAX="${GENERALSX_MAX_GLIBC}"
+
+          floor_of() {
+            objdump -T "$1" 2>/dev/null | grep -o 'GLIBC_[0-9.]*' | sed 's/^GLIBC_//' | sort -uV | tail -1
+          }
+
+          TARGETS=("${BUILD_DIR}/${{ matrix.game.value }}/${{ matrix.game.output }}")
+          while IFS= read -r so; do
+            TARGETS+=("$so")
+          done < <(find "${BUILD_DIR}/_deps" "${BUILD_DIR}" -maxdepth 4 \
+                        \( -name '*.so' -o -name '*.so.*' \) -type f 2>/dev/null | sort -u)
+
+          echo "glibc ceiling for this workflow: ${MAX}"
+          FAILED=0
+          OVERALL="0"
+          for t in "${TARGETS[@]}"; do
+            [ -f "$t" ] || continue
+            f="$(floor_of "$t")"
+            [ -n "$f" ] || continue
+            printf '  %-8s %s\n' "$f" "$t"
+            if [ "$(printf '%s\n%s\n' "$MAX" "$f" | sort -V | tail -1)" != "$MAX" ]; then
+              echo "::error file=$t::requires GLIBC_$f, above the GLIBC_$MAX baseline"
+              FAILED=1
+            fi
+            if [ "$(printf '%s\n%s\n' "$OVERALL" "$f" | sort -V | tail -1)" = "$f" ]; then
+              OVERALL="$f"
+            fi
+          done
+
+          echo "Highest glibc symbol version required: GLIBC_${OVERALL}"
+          echo "- Linux glibc floor (${{ matrix.game.id }}): \`GLIBC_${OVERALL}\` (ceiling \`GLIBC_${MAX}\`)" >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$FAILED" != "0" ]; then
+            echo "❌ Artifacts require a newer glibc than the declared baseline."
+            echo "   Either the runner base moved (see runs-on:) or new code pulled in a"
+            echo "   newer symbol. Do not just raise GENERALSX_MAX_GLIBC - that drops users."
+            exit 1
+          fi
+          echo "✅ glibc baseline OK"
 
       # GeneralsX @build GitHubCopilot 10/04/2026 Package as AppImage (self-contained, no FUSE needed for appimagetool in CI via APPIMAGE_EXTRACT_AND_RUN).
       - name: Package as AppImage

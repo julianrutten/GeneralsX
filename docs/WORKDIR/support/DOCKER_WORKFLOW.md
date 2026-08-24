@@ -5,20 +5,34 @@ This document describes the enhanced Docker workflow using pre-built images and 
 ## Overview
 
 All Docker-based builds use:
-1. **Pre-built images** - Base systems with compilers, CMake, build tools (NO vcpkg)
-2. **vcpkg volume mount** - Local `~/.generalsx/vcpkg` mounted into containers
+1. **Pre-built images** - Base systems with compilers, CMake, build tools, and (for Linux)
+   a pinned vcpkg baked in at `/opt/vcpkg-dist`
+2. **vcpkg volume mount** - Local `~/.generalsx/vcpkg` mounted into containers at
+   `/opt/vcpkg`, seeded from the image's baked copy on first use
 
-This approach keeps images small, allows easy vcpkg updates, and persists package cache.
+This persists the package cache across builds while keeping every developer on the same
+vcpkg commit CI uses.
 
 ## Docker Images
 
 ### Linux Native Builder (`generalsx/linux-builder:latest`)
-- **Base**: Ubuntu 22.04 (linux/amd64)
-- **Toolchain**: GCC, Clang, Ninja
-- **CMake**: 3.25.0
-- **vcpkg**: Mounted from `~/.generalsx/vcpkg` (NOT in image)
+- **Dockerfile**: `resources/dockerbuild/Dockerfile.dev` - the same image godmode uses as its
+  agent base. `Dockerfile.linux` was deleted on 20/08/2026; see the glibc note below.
+- **Base**: Ubuntu 24.04 (linux/amd64) - the series `.github/workflows/build-linux.yml` builds on
+- **Toolchain**: GCC, Clang, Ninja, ccache, clang-tidy, gdb
+- **CMake**: 3.31.6 (pinned from Kitware)
+- **vcpkg**: baked at `/opt/vcpkg-dist`, pinned to CI's commit, with a prewarmed binary cache;
+  seeded into the `~/.generalsx/vcpkg` mount on first run
 - **Purpose**: Native Linux ELF binaries (GeneralsX, GeneralsXZH)
-- **Size**: ~90MB (lightweight!)
+- **Size**: ~2-3 GB (the baked vcpkg and its prewarmed cache dominate)
+
+> **glibc baseline.** The image's `FROM` line is the ABI contract for everything it builds:
+> glibc symbol versioning is forward-only, so a binary linked against glibc `x.y` runs on
+> `x.y` or newer and nowhere else. On `ubuntu:24.04` the measured floor is **`GLIBC_2.38`**
+> (`objdump -T build/linux64-deploy/Generals/GeneralsX | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1`).
+> The deleted `Dockerfile.linux` was `ubuntu:26.04`, whose floor was `GLIBC_2.43` - binaries
+> that started on nothing older than Ubuntu 26.04. Do not bump the base without deciding, on
+> purpose, to drop every distribution below the new one.
 
 ### MinGW Cross-Compiler (`generalsx/mingw-builder:latest`)
 - **Base**: Ubuntu 22.04 (linux/amd64)
@@ -76,7 +90,7 @@ vcpkg is stored locally at `~/.generalsx/vcpkg` and mounted into containers:
 # Check images
 docker images | grep generalsx
 # Expected:
-# generalsx/linux-builder:latest   ~90MB
+# generalsx/linux-builder:latest   ~2-3GB (baked vcpkg + prewarmed binary cache)
 # generalsx/mingw-builder:latest   ~660MB
 
 # Check vcpkg
@@ -322,12 +336,13 @@ docker run --rm \
 ### Customizing Dockerfiles
 
 Edit the Dockerfiles in `resources/dockerbuild/`:
-- `Dockerfile.linux` - Linux native builder
+- `Dockerfile.dev` - Linux native builder **and** godmode's agent base. One image; changing
+  its `FROM` line changes the glibc floor of every locally built binary.
 - `Dockerfile.mingw` - MinGW cross-compiler
 
 Then rebuild:
 ```bash
-./scripts/docker-build-images.sh all
+./scripts/env/docker/docker-build-images.sh all
 ```
 
 ### Using Different vcpkg Location
